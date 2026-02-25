@@ -101,6 +101,9 @@ from feiyang.hybrid_agent import HybridAgent
 
 # HybridAgent already inherits from SAONegotiator — no wrapping needed.
 
+# ── Debug bundle support ────────────────────────────────────────────────────
+from debug_bundle import DebugBundle, build_bundle_from_negotiation, save_bundle
+
 # ── Configuration ───────────────────────────────────────────────────────────
 SEED = 42
 N_STEPS = 50           # negotiation rounds per session (reduced for speed)
@@ -108,6 +111,8 @@ MAX_AGENTS = None      # set to an int to limit evaluation size
 SKIP_AGENTS: set[str] = BROKEN_AGENTS.copy()
 PER_NEG_TIMEOUT = 2.0  # seconds per negotiation (kills slow agents)
 MAX_DIST = math.sqrt(2.0)  # max Euclidean distance in 2-agent [0,1]² space
+SAVE_BUNDLES = True    # write per-negotiation debug bundles to disk
+BUNDLE_DIR = OUTPUT_DIR / "debug_bundles"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -362,6 +367,9 @@ class NegotiationResult:
 #  CORE EVALUATION RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 
+_bundle_counter = 0  # monotonically increasing bundle ID
+
+
 def run_single_negotiation(
     agent_a_cls,
     agent_b_cls,
@@ -372,6 +380,7 @@ def run_single_negotiation(
     timeout: float = PER_NEG_TIMEOUT,
 ) -> NegotiationResult:
     """Run one bilateral negotiation and return a NegotiationResult."""
+    global _bundle_counter
     a_name = agent_a_name or agent_a_cls.__name__
     b_name = agent_b_name or agent_b_cls.__name__
 
@@ -411,7 +420,7 @@ def run_single_negotiation(
             except Exception:
                 pass
 
-        return NegotiationResult(
+        result = NegotiationResult(
             domain=scenario.name,
             agent_a_name=a_name,
             agent_b_name=b_name,
@@ -435,8 +444,23 @@ def run_single_negotiation(
             difficulty=scenario.difficulty,
             n_outcomes=scenario.n_outcomes,
         )
+
+        # ── Save debug bundle ──────────────────────────────────────────
+        if SAVE_BUNDLES:
+            try:
+                _bundle_counter += 1
+                bundle = build_bundle_from_negotiation(
+                    scenario, result, mechanism=mechanism, seed=SEED,
+                )
+                BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
+                save_bundle(bundle, BUNDLE_DIR / f"run_{_bundle_counter:05d}.json")
+            except Exception:
+                pass  # never let bundle saving break evaluation
+
+        return result
+
     except Exception as exc:
-        return NegotiationResult(
+        result = NegotiationResult(
             domain=scenario.name,
             agent_a_name=a_name,
             agent_b_name=b_name,
@@ -451,6 +475,18 @@ def run_single_negotiation(
             difficulty=scenario.difficulty,
             n_outcomes=scenario.n_outcomes,
         )
+
+        # ── Save error bundle ──────────────────────────────────────────
+        if SAVE_BUNDLES:
+            try:
+                _bundle_counter += 1
+                bundle = build_bundle_from_negotiation(scenario, result, seed=SEED)
+                BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
+                save_bundle(bundle, BUNDLE_DIR / f"run_{_bundle_counter:05d}.json")
+            except Exception:
+                pass
+
+        return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -958,18 +994,25 @@ def evaluate():
         all_nash = [r.nash_product if r.nash_product is not None else 0.0 for r in rs]
         avg_nash = sum(all_nash) / len(all_nash) if all_nash else 0.0
 
-        # NegMAS optimality metrics (only from agreed runs)
-        p_opts = [r.pareto_optimality for r in rs if r.pareto_optimality is not None]
-        avg_popt = sum(p_opts) / len(p_opts) if p_opts else 0.0
+        # NegMAS optimality metrics — averaged over ALL runs.
+        # Disagreement counts as 0 optimality to prevent selection bias
+        # (previously only averaged over agreed runs, inflating agents
+        #  that only agree in easy/cooperative domains).
+        p_opts_all = [r.pareto_optimality if r.pareto_optimality is not None else 0.0
+                      for r in rs]
+        avg_popt = sum(p_opts_all) / len(p_opts_all) if p_opts_all else 0.0
 
-        n_opts = [r.nash_optimality for r in rs if r.nash_optimality is not None]
-        avg_nopt = sum(n_opts) / len(n_opts) if n_opts else 0.0
+        n_opts_all = [r.nash_optimality if r.nash_optimality is not None else 0.0
+                      for r in rs]
+        avg_nopt = sum(n_opts_all) / len(n_opts_all) if n_opts_all else 0.0
 
-        k_opts = [r.kalai_optimality for r in rs if r.kalai_optimality is not None]
-        avg_kopt = sum(k_opts) / len(k_opts) if k_opts else 0.0
+        k_opts_all = [r.kalai_optimality if r.kalai_optimality is not None else 0.0
+                      for r in rs]
+        avg_kopt = sum(k_opts_all) / len(k_opts_all) if k_opts_all else 0.0
 
-        mw_opts = [r.max_welfare_opt for r in rs if r.max_welfare_opt is not None]
-        avg_mwopt = sum(mw_opts) / len(mw_opts) if mw_opts else 0.0
+        mw_opts_all = [r.max_welfare_opt if r.max_welfare_opt is not None else 0.0
+                       for r in rs]
+        avg_mwopt = sum(mw_opts_all) / len(mw_opts_all) if mw_opts_all else 0.0
 
         p_dists = [r.pareto_dist for r in rs if r.pareto_dist is not None]
         avg_pdist = sum(p_dists) / len(p_dists) if p_dists else float('nan')
@@ -984,9 +1027,13 @@ def evaluate():
         opp_utils = [r.util_b for r in rs if r.util_b is not None]
         opp_sat = sum(opp_utils) / len(opp_utils) if opp_utils else 0.0
 
-        # Robustness: no crashes/errors
-        error_rate = n_errors / n if n > 0 else 0.0
-        robustness = 1.0 - error_rate
+        # Robustness: penalises errors, broken negotiations, AND timeouts
+        # (previously only counted exceptions → always 1.0)
+        n_broken = sum(1 for r in rs if r.broken and not r.error)
+        n_timeouts = sum(1 for r in rs if r.timedout)
+        n_failures = n_errors + n_broken + n_timeouts
+        failure_rate = n_failures / n if n > 0 else 0.0
+        robustness = 1.0 - failure_rate
 
         # Difficulty-weighted utility: performance on hard scenarios
         hard_utils = [r.util_a if r.util_a is not None else 0.0
@@ -994,30 +1041,35 @@ def evaluate():
         hard_u = sum(hard_utils) / len(hard_utils) if hard_utils else avg_u
 
         # ── Composite score (multi-signal) ────────────────────────────
-        # Optimality metrics are scaled by agreement rate to prevent
-        # agents with few lucky agreements from getting inflated scores.
-        # Speed and opp_sat are de-weighted to penalise pushovers.
+        # Optimality metrics are now averaged over ALL runs (disagree=0)
+        # so they already incorporate a natural penalty for low agree_rate.
+        # No additional agree_rate multiplication needed.
+        #
         #   30% avg utility  (core self-interest, penalises no-deals)
-        #   10% Pareto opt * agree_rate  (effective Pareto)
-        #   10% Nash opt * agree_rate    (effective Nash)
+        #   10% Nash optimality (all-run avg, most discriminative)
+        #    5% Kalai optimality (all-run avg)
         #   10% agreement rate
-        #    5% Kalai opt * agree_rate   (effective Kalai)
         #    3% negotiation speed
         #    2% opponent satisfaction
         #    5% robustness (no errors/crashes)
         #   15% difficulty-weighted utility
         #   10% utility under agreement  (deal quality)
-        composite = (
+        #   10% per-domain rank score (filled in later, 0 for now)
+        #
+        # NOTE: pareto_opt removed from composite — near-constant across
+        # agents (0.92-1.0 range, negligible discriminative power).
+        # It is still reported in the ranking CSV for reference.
+        composite_raw = (
             0.30 * avg_u
-            + 0.10 * avg_popt * agree_rate
-            + 0.10 * avg_nopt * agree_rate
+            + 0.10 * avg_nopt
+            + 0.05 * avg_kopt
             + 0.10 * agree_rate
-            + 0.05 * avg_kopt * agree_rate
             + 0.03 * speed
             + 0.02 * opp_sat
             + 0.05 * robustness
             + 0.15 * hard_u
             + 0.10 * util_under_agree
+            # + 0.10 reserved for per_domain_rank (added below)
         )
 
         agent_stats.append({
@@ -1025,7 +1077,10 @@ def evaluate():
             "runs": n,
             "agreed": n_agreed,
             "errors": n_errors,
+            "broken": n_broken,
+            "timeouts": n_timeouts,
             "agree_rate": agree_rate,
+            "composite_raw": composite_raw,
             "avg_u": avg_u,
             "util_under_agree": util_under_agree,
             "avg_welfare": avg_w,
@@ -1039,16 +1094,89 @@ def evaluate():
             "opp_sat": opp_sat,
             "robustness": robustness,
             "hard_u": hard_u,
-            "composite": composite,
+            "composite": 0.0,  # placeholder — filled after per-domain ranking
+            "per_domain_rank": 0.0,  # placeholder
         })
+
+    # ── Per-domain rank aggregation ────────────────────────────────────
+    # For each domain, rank agents by avg utility (disagree→0).
+    # Then compute each agent's mean percentile across all domains.
+    # This eliminates cooperative-domain inflation because each domain
+    # contributes equally regardless of absolute score level.
+    domain_agent_utility: dict[str, dict[str, list[float]]] = {}
+    for r in results:
+        domain_agent_utility.setdefault(r.domain, {}).setdefault(r.agent_a_name, [])
+        u = r.util_a if r.util_a is not None else 0.0
+        domain_agent_utility[r.domain][r.agent_a_name].append(u)
+
+    # Average utility per agent per domain
+    domain_agent_avg: dict[str, dict[str, float]] = {}
+    for domain, agent_utils in domain_agent_utility.items():
+        domain_agent_avg[domain] = {
+            agent: sum(vals) / len(vals) if vals else 0.0
+            for agent, vals in agent_utils.items()
+        }
+
+    # Compute percentile rank per domain
+    agent_percentiles: dict[str, list[float]] = {s["name"]: [] for s in agent_stats}
+    for domain, agent_avgs in domain_agent_avg.items():
+        sorted_vals = sorted(agent_avgs.values())
+        n_agents = len(sorted_vals)
+        for agent, val in agent_avgs.items():
+            below = sum(1 for v in sorted_vals if v < val)
+            pct = below / max(n_agents - 1, 1)  # normalise to [0, 1]
+            if agent in agent_percentiles:
+                agent_percentiles[agent].append(pct)
+
+    # Store mean percentile rank per agent
+    for s in agent_stats:
+        pcts = agent_percentiles.get(s["name"], [])
+        s["per_domain_rank"] = sum(pcts) / len(pcts) if pcts else 0.0
+        # Final composite: 90% raw signal-based + 10% per-domain rank
+        s["composite"] = s["composite_raw"] + 0.10 * s["per_domain_rank"]
 
     agent_stats.sort(key=lambda x: x["composite"], reverse=True)
 
+    # ── Metric diagnostics: detect constant metrics, NaN, range violations ──
+    print("\n" + "=" * 120)
+    print("METRIC DIAGNOSTICS")
+    print("=" * 120)
+    _diag_keys = ["avg_u", "util_under_agree", "avg_welfare", "avg_popt",
+                  "avg_nopt", "avg_kopt", "speed", "opp_sat", "robustness",
+                  "hard_u", "composite"]
+    for key in _diag_keys:
+        vals = [s[key] for s in agent_stats if isinstance(s.get(key), (int, float))
+                and not math.isnan(s[key])]
+        n_nans = sum(1 for s in agent_stats
+                     if isinstance(s.get(key), float) and math.isnan(s[key]))
+        if not vals:
+            print(f"  {key:<22} ALL NaN/missing ({n_nans} NaN)")
+            continue
+        vmin, vmax = min(vals), max(vals)
+        vmean = sum(vals) / len(vals)
+        is_const = (vmax - vmin) < 1e-8
+        flag = " *** CONSTANT — zero discriminative power" if is_const else ""
+        flag += f"  ({n_nans} NaN)" if n_nans else ""
+        print(f"  {key:<22} min={vmin:.4f}  max={vmax:.4f}  "
+              f"mean={vmean:.4f}  range={vmax - vmin:.4f}{flag}")
+
+    # Check RandomAgent rank
+    for rank, s in enumerate(agent_stats, 1):
+        if s["name"] == "RandomAgent":
+            pct = rank / len(agent_stats) * 100
+            if pct <= 40:
+                print(f"\n  *** WARNING: RandomAgent ranked #{rank}/{len(agent_stats)} "
+                      f"(top {pct:.0f}%). This suggests evaluation calibration issues.")
+            break
+    print("=" * 120)
+
     print("\n" + "=" * 170)
     print("AGENT RANKING (sorted by composite score)")
-    print("  Composite = 0.30*AvgUtil + 0.10*POpt*Agree + 0.10*NOpt*Agree + 0.10*AgreeRate + 0.05*KOpt*Agree")
+    print("  Composite = 0.30*AvgUtil + 0.10*NOpt + 0.05*KOpt + 0.10*AgreeRate")
     print("             + 0.03*Speed + 0.02*OppSat + 0.05*Robust + 0.15*HardU + 0.10*U|Agree")
-    print("  NOTE: AvgUtil averaged over ALL runs (disagreement -> 0); optimality metrics from NegMAS")
+    print("             + 0.10*PerDomainRank")
+    print("  NOTE: Optimality metrics averaged over ALL runs (disagree→0); per-domain rank normalises across domains")
+    print("  NOTE: Pareto opt removed from composite (near-constant, ~zero discriminative power)")
     print("=" * 170)
     print(f"{'Rank':<6} {'Agent':<25} {'#Runs':>6} {'Agreed':>7} {'Rate%':>6} "
           f"{'AvgUtil':>8} {'U|Agree':>8} {'Welfare':>8} "
@@ -1086,7 +1214,7 @@ def evaluate():
             "avg_pareto_dist", "avg_pareto_opt", "avg_nash_opt",
             "avg_kalai_opt", "avg_max_welfare_opt",
             "speed", "opp_satisfaction", "robustness", "hard_util",
-            "composite",
+            "per_domain_rank", "composite",
         ])
         for rank, s in enumerate(agent_stats, 1):
             pdist_str = f"{s['avg_pdist']:.4f}" if not math.isnan(s['avg_pdist']) else ""
@@ -1100,6 +1228,7 @@ def evaluate():
                 f"{s['avg_mwopt']:.4f}",
                 f"{s['speed']:.4f}", f"{s['opp_sat']:.4f}",
                 f"{s['robustness']:.4f}", f"{s['hard_u']:.4f}",
+                f"{s['per_domain_rank']:.4f}",
                 f"{s['composite']:.4f}",
             ])
     print(f"[LOG] Agent ranking written to {ranking_csv}")
