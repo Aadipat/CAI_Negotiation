@@ -1,0 +1,16 @@
+[project]
+name = "pyson"
+version = "1.1.3"
+description = "Python JSON serialization utilities"
+requires-python = ">=3.8"
+dependencies = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]

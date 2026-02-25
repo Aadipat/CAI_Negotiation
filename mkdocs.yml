@@ -1,0 +1,80 @@
+site_name: negmas-geniusweb-bridge
+site_description: Bridge between NegMAS and GeniusWeb negotiation frameworks
+site_author: Yasser Mohammad
+site_url: https://yasserfarouk.github.io/negmas-geniusweb-bridge/
+
+repo_name: yasserfarouk/negmas-geniusweb-bridge
+repo_url: https://github.com/yasserfarouk/negmas-geniusweb-bridge
+
+copyright: Copyright &copy; 2024-2026 Yasser Mohammad
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            heading_level: 2
+            docstring_style: google
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.arithmatex:
+      generic: true
+  - admonition
+  - pymdownx.details
+  - tables
+  - attr_list
+  - md_in_html
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - User Guide:
+    - Available Agents: user-guide/agents.md
+    - Mixing with NegMAS: user-guide/mixing.md
+    - Running Tournaments: user-guide/tournaments.md
+  - API Reference:
+    - Wrapper Classes: api/wrappers.md
+    - Agents: api/agents.md
+  - Development:
+    - Contributing: development/contributing.md
+    - Architecture: development/architecture.md
+    - Testing: development/testing.md

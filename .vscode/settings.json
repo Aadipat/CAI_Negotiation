@@ -1,0 +1,9 @@
+{
+    "terminal.integrated.env.windows": {
+        "PATH": "C:\\Users\\13152\\.local\\bin;C:\\Users\\13152\\Documents\\negmas-geniusweb-bridge\\.venv\\Scripts;${env:PATH}"
+    },
+    "terminal.integrated.env.linux": {
+        "PATH": "C:/Users/13152/.local/bin:C:/Users/13152/Documents/negmas-geniusweb-bridge/.venv/bin:${env:PATH}"
+    },
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe"
+}

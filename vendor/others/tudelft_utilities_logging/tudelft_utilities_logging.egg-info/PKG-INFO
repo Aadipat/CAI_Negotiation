@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: tudelft-utilities-logging
+Version: 1.0.0
+Summary: TU Delft logging utilities
+Requires-Python: >=3.8

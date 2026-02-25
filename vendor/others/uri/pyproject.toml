@@ -1,0 +1,16 @@
+[project]
+name = "uri"
+version = "1.0.0"
+description = "URI utilities"
+requires-python = ">=3.8"
+dependencies = ["rfc3986"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]

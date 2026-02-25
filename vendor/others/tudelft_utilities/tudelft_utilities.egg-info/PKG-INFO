@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: tudelft-utilities
+Version: 1.0.5
+Summary: TU Delft utilities library
+Requires-Python: >=3.8

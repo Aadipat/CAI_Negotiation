@@ -1,0 +1,9 @@
+pyproject.toml
+uri/__init__.py
+uri/py.typed
+uri/uri.py
+uri.egg-info/PKG-INFO
+uri.egg-info/SOURCES.txt
+uri.egg-info/dependency_links.txt
+uri.egg-info/requires.txt
+uri.egg-info/top_level.txt

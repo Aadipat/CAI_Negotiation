@@ -1,0 +1,16 @@
+[project]
+name = "tudelft-utilities-logging"
+version = "1.0.0"
+description = "TU Delft logging utilities"
+requires-python = ">=3.8"
+dependencies = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]

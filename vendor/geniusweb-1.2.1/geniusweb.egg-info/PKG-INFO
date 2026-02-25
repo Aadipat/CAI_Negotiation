@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: geniusweb
+Version: 1.2.1
+Summary: GeniusWeb glue code to connect python3 parties
+Home-page: https://tracinsy.ewi.tudelft.nl/pubtrac/GeniusWeb
+Author: W.Pasman
+Requires-Python: >=3.8
+Requires-Dist: pyson
+Requires-Dist: tudelft-utilities
+Requires-Dist: tudelft-utilities-logging
+Requires-Dist: uri
+Requires-Dist: websocket-client>=1.0.1
+Dynamic: author
+Dynamic: home-page

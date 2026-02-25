@@ -1,0 +1,49 @@
+[project]
+name = "negmas-geniusweb-bridge"
+version = "0.1.2"
+description = "A bridge that allows you to run GeniusWeb agents in negmas SAOMechanism(s)."
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+authors = [
+    { name = "Yasser Mohammad", email = "yasserfarouk@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "negmas>=0.14.0",
+    "geniusweb",
+    "pyson",
+    "tudelft-utilities",
+    "tudelft-utilities-logging",
+    "uri",
+    "plotly>=6.5.0",
+]
+
+[dependency-groups]
+test = [
+    "pytest>=7.0.0",
+    "pytest-timeout>=2.0.0",
+]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.1",
+    "mkdocstrings[python]>=0.29.0",
+    "pymdown-extensions>=10.0",
+]
+
+
+[tool.uv.sources]
+geniusweb = { path = "vendor/geniusweb-1.2.1", editable = true }
+pyson = { path = "vendor/others/pyson", editable = true }
+tudelft-utilities = { path = "vendor/others/tudelft_utilities", editable = true }
+tudelft-utilities-logging = { path = "vendor/others/tudelft_utilities_logging", editable = true }
+uri = { path = "vendor/others/uri", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

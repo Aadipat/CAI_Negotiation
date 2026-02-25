@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: pyson
+Version: 1.1.3
+Summary: Python JSON serialization utilities
+Requires-Python: >=3.8

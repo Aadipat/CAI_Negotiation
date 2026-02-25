@@ -1,0 +1,177 @@
+import math
+
+from geniusweb.bidspace.AllBidsList import AllBidsList
+from geniusweb.issuevalue.Bid import Bid
+from geniusweb.profile.utilityspace.LinearAdditiveUtilitySpace import (
+    LinearAdditiveUtilitySpace,
+)
+from geniusweb.progress.ProgressTime import ProgressTime
+from time import time
+
+
+"""
+    Some useful functions
+"""
+
+
+def get_utility(profile: LinearAdditiveUtilitySpace, bid: Bid) -> float:
+    """
+        Utility of a bid.
+    :param profile: Profile
+    :param bid: Bid
+    :return: Utility of bid
+    """
+    return float(profile.getUtility(bid))
+
+
+def get_bid_at(profile: LinearAdditiveUtilitySpace, utility: float) -> Bid:
+    """
+        Get the closest bid to desired utility
+    :param profile: Profile
+    :param utility: Desired Utility
+    :return: The closest bid to desired utility
+    """
+    domain = profile.getDomain()
+    all_bids = AllBidsList(domain)
+
+    closest = all_bids.get(0)
+
+    for i in range(all_bids.size()):
+        if abs(utility - get_utility(profile, all_bids.get(i))) < abs(utility - get_utility(profile, closest)):
+            closest = all_bids.get(i)
+
+    return closest
+
+
+def get_bids_at(profile: LinearAdditiveUtilitySpace, utility: float, lower_bound: float = 0.02,
+                upper_bound: float = 0.02) -> list:
+    """
+        Get bids between [utility - lower_bound, utility + upper_bound]
+    :param profile: Profile
+    :param utility: Desired Utility
+    :param lower_bound: Lower bound of the Range
+    :param upper_bound: Upper bound of the Range
+    :return: List of bids in that range
+    """
+    domain = profile.getDomain()
+    all_bids = AllBidsList(domain)
+
+    bids = []
+
+    for i in range(1, all_bids.size()):
+        if utility - lower_bound <= get_utility(profile, all_bids.get(i)) <= utility + upper_bound:
+            bids.append(all_bids.get(i))
+
+    return bids
+
+
+def get_min_max_utility(profile: LinearAdditiveUtilitySpace) -> (float, float):
+    """
+        Get the minimum and maximum utility value in bid space
+    :param profile: Profile
+    :return: Minimum and maximum utility as float
+    """
+    domain = profile.getDomain()
+    all_bids = AllBidsList(domain)
+
+    min_utility = 1.0
+    max_utility = 0.0
+
+    for i in range(all_bids.size()):
+        min_utility = min(get_utility(profile, all_bids.get(i)), min_utility)
+        max_utility = max(get_utility(profile, all_bids.get(i)), max_utility)
+
+    return min_utility, max_utility
+
+
+def get_mean_stdev(profile: LinearAdditiveUtilitySpace) -> (float, float):
+    """
+        Mean and standard derivation of bid space
+    :param profile: Profile
+    :return: Mean and standard derivation values as float
+    """
+    domain = profile.getDomain()
+    all_bids = AllBidsList(domain)
+
+    utilities = [get_utility(profile, all_bids.get(i)) for i in range(all_bids.size())]
+
+    mean = sum(utilities) / len(utilities)
+
+    stdev = math.sqrt(sum([math.pow(utility - mean, 2.) for utility in utilities]) / len(utilities))
+
+    return mean, stdev
+
+
+def get_time(progress: ProgressTime) -> float:
+    """
+        Get current time. Initially, it is 0; and it is 1 at the end of the negotiation.
+    :param progress: ProgressTime object to calculate t
+    :return: Current time as float in range [0, 1]
+    """
+    return progress.get(int(time() * 1000))
+
+
+def get_reservation_value(profile: LinearAdditiveUtilitySpace) -> float:
+    """
+        Reservation bid's utility if exists. If not exist, it returns -1
+    :param profile: Profile
+    :return: Utility of Reservation Bid
+    """
+    if profile.getReservationBid() is not None:
+        return get_utility(profile, profile.getReservationBid())
+
+    return -1.0
+
+
+def get_move(my_utility_change: float, opponent_utility_change: float, threshold: float = 0.03) -> str:
+    """
+        This method provides the negotiation move.
+    :param my_utility_change: Utility change between two bid for our agent
+    :param opponent_utility_change: Utility change between two bid for the opponent
+    :param threshold: Equal threshold, as a default: 0.03
+    :return: Move
+    """
+    if abs(my_utility_change) < threshold and abs(opponent_utility_change) < threshold:
+        return "Silent"
+
+    if abs(my_utility_change) < threshold and opponent_utility_change > 0.:
+        return "Nice"
+
+    if my_utility_change < 0 and opponent_utility_change >= 0:
+        return "Concession"
+
+    if my_utility_change <= 0 and opponent_utility_change < 0:
+        return "Unfortunate"
+
+    if my_utility_change > 0 and opponent_utility_change <= 0:
+        return "Selfish"
+
+    if my_utility_change > 0 and opponent_utility_change > 0:
+        return "Fortunate"
+
+    return ""
+
+
+POSITIVE_MOVES = ["Fortunate", "Nice", "Concession"]
+NEGATIVE_MOVES = ["Selfish", "Unfortunate", "Silent"]
+
+
+def calculate_move_correlation(move_a: list, move_b: list) -> float:
+    change_a_counter = 0.
+    change_b_counter = 0.
+
+    for i in range(1, min(len(move_a), len(move_b))):
+        if move_a[i] in POSITIVE_MOVES and move_a[i - 1] in NEGATIVE_MOVES:
+            change_a_counter += 1
+            if move_b[i] in POSITIVE_MOVES and move_b[i - 1] in NEGATIVE_MOVES:
+                change_b_counter += 1
+            elif move_b[i] in NEGATIVE_MOVES and move_b[i - 1] in POSITIVE_MOVES:
+                change_b_counter -= 1
+        elif move_a[i] in NEGATIVE_MOVES and move_a[i - 1] in POSITIVE_MOVES:
+            change_a_counter += 1
+            if move_b[i] in NEGATIVE_MOVES and move_b[i - 1] in POSITIVE_MOVES:
+                change_b_counter += 1
+            elif move_b[i] in POSITIVE_MOVES and move_b[i - 1] in NEGATIVE_MOVES:
+                change_b_counter -= 1
+
+    return change_b_counter / (change_a_counter + 1e-8)

@@ -1,0 +1,19 @@
+{
+	"venvPath": "/Users/yasser/myvenvs",
+	"venv": "negmas-geniusweb-bridge",
+	"extraPaths": [
+		"/Users/yasser/code/projects/negmas",
+		"/Users/yasser/code/projects/negmas-geniusweb-bridge/vendor/geniusweb-1.2.1",
+		"/Users/yasser/code/projects/negmas-geniusweb-bridge/vendor/others/tudelft_utilities",
+		"/Users/yasser/code/projects/negmas-geniusweb-bridge/vendor/others/tudelft_utilities_logging",
+		"/Users/yasser/code/projects/negmas-geniusweb-bridge/vendor/others/uri",
+		"/Users/yasser/code/projects/negmas-geniusweb-bridge/vendor/others/pyson",
+		"/Users/yasser/code/projects/negmas-geniusweb-bridge/src"
+	],
+	"useLibraryCodeForTypes": true,
+	"reportMissingImports": "warning",
+	"reportOptionalMemberAccess": "warning",
+	"reportArgumentType": "warning",
+	"reportIncompatibleMethodOverride": "warning",
+	"reportAttributeAccessIssue": "warning"
+}

@@ -1,0 +1,12 @@
+Metadata-Version: 1.1
+Name: geniusweb
+Version: 1.2.1
+Summary: GeniusWeb glue code to connect python3 parties
+Home-page: https://tracinsy.ewi.tudelft.nl/pubtrac/GeniusWeb
+Author: W.Pasman
+Author-email: UNKNOWN
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9

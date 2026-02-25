@@ -1,0 +1,19 @@
+[project]
+name = "geniusweb"
+version = "1.2.1"
+description = "GeniusWeb glue code to connect python3 parties"
+requires-python = ">=3.8"
+dependencies = [
+    "pyson",
+    "tudelft-utilities",
+    "tudelft-utilities-logging",
+    "uri",
+    "websocket-client>=1.0.1",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["geniusweb"]
