@@ -133,26 +133,52 @@ if GENIUS_WEB_AVAILABLE:
         if not issues:
             raise ValueError("Utility function must have known issues")
 
-        # Build issue weights (map issue index to weight)
-        issue_weights = {}
-        for i, w in enumerate(ufun.weights):
-            issue_weights[str(i)] = w
+        # Build value weights for each issue, normalizing to [0, 1]
+        value_weights: dict[str, dict[str, float]] = {}
+        issues_values: dict[str, dict[str, list[str]]] = {}
+        raw_ranges: list[tuple[float, float]] = []
 
-        # Build value weights for each issue
-        value_weights = {}
-        issues_values = {}
         for i, (issue, value_fun) in enumerate(zip(issues, ufun.values)):
             issue_key = str(i)
-            value_weights[issue_key] = {}
             issues_values[issue_key] = {"values": []}
 
-            # Enumerate all values for this issue
+            # First pass: collect raw values
+            raw_vals: dict[str, float] = {}
             for v in issue.all:
                 v_str = str(v)
                 issues_values[issue_key]["values"].append(v_str)
-                # Get the utility for this value from the value function
                 u = value_fun(v)
-                value_weights[issue_key][v_str] = float(u) if u is not None else 0.0
+                raw_vals[v_str] = float(u) if u is not None else 0.0
+
+            # Normalize to [0, 1] (GeniusWeb requires this)
+            vals = list(raw_vals.values())
+            v_min = min(vals) if vals else 0.0
+            v_max = max(vals) if vals else 0.0
+            v_range = v_max - v_min
+            raw_ranges.append((v_min, v_max))
+
+            if v_range > 0:
+                value_weights[issue_key] = {
+                    k: (v - v_min) / v_range for k, v in raw_vals.items()
+                }
+            else:
+                value_weights[issue_key] = {k: 0.0 for k in raw_vals}
+
+        # Adjust issue weights to compensate for per-issue normalization
+        issue_weights: dict[str, float] = {}
+        for i, w in enumerate(ufun.weights):
+            v_min, v_max = raw_ranges[i]
+            v_range = v_max - v_min
+            issue_weights[str(i)] = w * v_range if v_range > 0 else 0.0
+
+        # Re-normalize weights to sum to 1
+        total_w = sum(issue_weights.values())
+        if total_w > 0:
+            issue_weights = {k: v / total_w for k, v in issue_weights.items()}
+        else:
+            # Fallback: equal weights
+            n = len(issue_weights)
+            issue_weights = {k: 1.0 / n for k in issue_weights}
 
         # Construct the GeniusWeb profile
         domain = {"name": "negmas_domain", "issuesValues": issues_values}
@@ -239,6 +265,8 @@ if GENIUS_WEB_AVAILABLE:
             self._tmp_dir: Path | None = None
             self._last_received_offer: Outcome | None = None
             self._initialized = False
+            self._cached_offer: Outcome | None = None  # cached counter-offer from respond
+            self._has_cached_offer = False  # whether a cached offer is available
 
         def _init_party(self, n_steps: int | None) -> None:
             """Initialize the GeniusWeb party with settings."""
@@ -384,27 +412,25 @@ if GENIUS_WEB_AVAILABLE:
             """
             Generate a proposal by delegating to the GeniusWeb party.
 
-            Args:
-                state: Current negotiation state.
-                dest: Destination negotiator ID (ignored for bilateral).
-
-            Returns:
-                An outcome to propose, or None to end negotiation.
+            If ``respond()`` was called first for this step (which is the
+            normal NegMAS SAOP flow), return the counter-offer that was
+            already obtained from the party.  Otherwise fall back to
+            invoking the party directly (e.g. the very first step where
+            there is nothing to respond to yet).
             """
             _ = dest
 
             if not self._initialized:
                 self._init_party(self.nmi.n_steps if self.nmi else None)
 
-            # If there's a current offer from opponent, notify the party
-            if (
-                state.current_offer is not None
-                and state.current_offer != self._last_received_offer
-            ):
-                self._notify_opponent_action(state.current_offer)
-                self._last_received_offer = state.current_offer
+            # Return cached counter-offer from respond() if available
+            if self._has_cached_offer:
+                offer = self._cached_offer
+                self._cached_offer = None
+                self._has_cached_offer = False
+                return offer
 
-            # Get action from the party
+            # First step (no prior respond call) – invoke party directly
             action = self._get_party_action()
 
             if action is None:
@@ -422,12 +448,10 @@ if GENIUS_WEB_AVAILABLE:
             """
             Respond to an offer by delegating to the GeniusWeb party.
 
-            Args:
-                state: Current negotiation state.
-                source: Source negotiator ID (ignored for bilateral).
-
-            Returns:
-                ResponseType indicating accept, reject, or end negotiation.
+            Invokes the party once (ActionDone + YourTurn) and caches
+            the counter-offer so that ``propose()`` does not invoke
+            the party a second time (which would double-advance the
+            round counter).
             """
             _ = source
 
@@ -455,7 +479,12 @@ if GENIUS_WEB_AVAILABLE:
             if isinstance(action, EndNegotiation):
                 return ResponseType.END_NEGOTIATION
 
-            # Offer means rejection of current offer
+            # Party sent an Offer → reject the current offer and cache
+            # the counter-offer for the upcoming propose() call.
+            if isinstance(action, Offer):
+                self._cached_offer = _geniusweb_bid_to_outcome(action.getBid())
+                self._has_cached_offer = True
+
             return ResponseType.REJECT_OFFER
 
     def make_geniusweb_negotiator(

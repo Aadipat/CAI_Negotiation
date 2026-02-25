@@ -1,56 +1,69 @@
 """
-Meta-controller for portfolio-based expert selection.
+Meta-controller for portfolio-based expert selection — v2.
 
-Implements bandit-style expert selection with guarded switching,
-inspired by Caduceus (ANAC 2016) and strategy portfolio research.
+Improved expert selection with:
+- 5 experts: Boulware, Pareto, NiceTFT, Forecast, DealSeeker
+- Reduced Boulware bias in early phases
+- TFT/MiCRO opponent detection → route to NiceTFT expert
+- Stalemate detection → route to DealSeeker
+- No switching cooldown in late phases (t > 0.85)
+- Faster switching to allow adaptive behavior
+- Forced DealSeeker when near deadline
 
-Selects among experts based on:
-- Opponent style features (from OpponentModel)
-- Phase of negotiation (early/mid/late)
-- Online reward estimation (how well each expert's suggestions perform)
+Expert indices:
+  0: BoulwareExpert  (hardheaded, slow concession)
+  1: ParetoExpert    (Pareto-optimal bidding)
+  2: NiceTFTExpert   (reciprocal concession for TFT opponents)
+  3: ForecastExpert  (adaptive concession based on predictions)
+  4: DealSeekerExpert (late-game agreement maximizer)
 """
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
-from .experts import ExpertBase, BoulwareExpert, ParetoExpert, MiCROExpert, ForecastExpert
+from .experts import (
+    ExpertBase,
+    BoulwareExpert,
+    ParetoExpert,
+    NiceTFTExpert,
+    ForecastExpert,
+    DealSeekerExpert,
+)
 from .opponent_model import OpponentModel
 
 
 class MetaController:
     """
-    Portfolio meta-controller with expert voting and guarded switching.
+    Portfolio meta-controller with expert voting and guarded switching — v2.
 
-    Maintains weights for each expert and selects based on:
-    1. Phase-dependent priors (early: boulware, mid: adaptive, late: secure deal)
-    2. Opponent classification feedback
-    3. Online reward signals from acceptance/agreement quality
-
-    Switching policy:
-    - Early (t < 0.5): bias toward hardheaded (E1) or Pareto (E2)
-    - Mid (0.5 <= t < 0.85): switch based on opponent concession rate
-    - Late (t >= 0.85): allow forced switch to "secure agreement" expert
+    Key changes from v1:
+    - 5 experts instead of 4 (added DealSeeker, replaced MiCRO with NiceTFT)
+    - Balanced initial weights (less Boulware dominance)
+    - Stalemate-aware routing
+    - TFT opponent detection → NiceTFT expert
+    - Forced DealSeeker activation near deadline
+    - Reduced switching cooldown (5 → 3, disabled after t=0.85)
     """
 
     def __init__(self, experts: list[ExpertBase] | None = None):
         if experts is None:
             self.experts = [
-                BoulwareExpert(e=0.08),
-                ParetoExpert(e=0.15, alpha=0.2),
-                MiCROExpert(),
-                ForecastExpert(base_e=0.12),
+                BoulwareExpert(e=0.08),       # E0: tighter concession
+                ParetoExpert(e=0.10, alpha=0.30),  # E1: Pareto bidder (self-interest first)
+                NiceTFTExpert(),               # E2: reciprocal (for TFT opponents)
+                ForecastExpert(base_e=0.10),   # E3: adaptive
+                DealSeekerExpert(),            # E4: late-game deal closer
             ]
         else:
             self.experts = experts
 
         self.n_experts = len(self.experts)
 
-        # Bandit weights (initialized to favor boulware)
+        # Balanced initial weights (Boulware preferred to hold ground early)
         self.weights = [1.0] * self.n_experts
-        self.weights[0] = 2.5  # Boulware starts much stronger
-        self.weights[2] = 1.5  # MiCRO also strong
+        self.weights[0] = 2.0   # Boulware — hold ground
+        self.weights[2] = 2.0   # NiceTFT for TFT/MiCRO detection
 
         # Performance tracking
         self.expert_rewards: list[float] = [0.0] * self.n_experts
@@ -60,9 +73,9 @@ class MetaController:
         # EMA of expert quality
         self.expert_ema: list[float] = [0.5] * self.n_experts
 
-        # Switching cooldown (avoid rapid switches)
+        # Switching cooldown (minimal for faster adaptation)
         self._switch_cooldown: int = 0
-        self._min_switches_apart: int = 8  # at least 8 rounds between switches
+        self._min_switches_apart: int = 2  # was 3
 
     def select_expert(
         self,
@@ -72,88 +85,123 @@ class MetaController:
     ) -> int:
         """
         Select which expert to use this round.
-
         Returns the index of the selected expert.
         """
-        # Decrement cooldown
+        # === FORCED OVERRIDES ===
+
+        # Force DealSeeker only very near deadline
+        if t >= 0.93:
+            self.last_selected = 4  # DealSeeker
+            return 4
+
+        # Force NiceTFT if stalemate detected (but wait longer)
+        if (opp_model is not None
+                and opp_model.is_stalemate
+                and t < 0.90
+                and round_num > 8):  # wait for clear stalemate
+            self.last_selected = 2  # NiceTFT
+            self._switch_cooldown = 0
+            return 2
+
+        # Force NiceTFT early if opponent looks like TFT/MiCRO
+        if (opp_model is not None
+                and len(opp_model.offers) >= 8
+                and (opp_model.is_tft_style or opp_model.is_micro_style)
+                and t < 0.90):
+            self.last_selected = 2  # NiceTFT
+            self._switch_cooldown = 0
+            return 2
+
+        # === Normal selection with cooldown ===
+        # Disable cooldown in late phases for faster adaptation
+        if t > 0.70:  # was 0.85
+            self._switch_cooldown = 0
+
         if self._switch_cooldown > 0:
             self._switch_cooldown -= 1
             return self.last_selected
 
-        # Compute scores for each expert
         scores = self._compute_scores(opp_model, t)
-
-        # Select best scoring expert
         best_idx = max(range(self.n_experts), key=lambda i: scores[i])
 
-        # Only switch if the new expert is significantly better
         if best_idx != self.last_selected:
+            # Lower switching threshold for faster adaptation
             improvement = scores[best_idx] - scores[self.last_selected]
-            if improvement > 0.2 or t > 0.95:  # Higher threshold for switching
+            if improvement > 0.10 or t > 0.60:  # was 0.15 / 0.80
                 self.last_selected = best_idx
                 self._switch_cooldown = self._min_switches_apart
-            # else keep current expert (stability)
 
         self.expert_counts[self.last_selected] += 1
         return self.last_selected
 
     def _compute_scores(self, opp_model: OpponentModel | None, t: float) -> list[float]:
         """Compute selection scores for each expert based on context."""
+        # Indices: 0=Boulware, 1=Pareto, 2=NiceTFT, 3=Forecast, 4=DealSeeker
         scores = [0.0] * self.n_experts
 
-        # === Phase-dependent priors ===
-        if t < 0.3:
-            # Early: strongly favor boulware and MiCRO (stay tough)
-            phase_priors = [3.0, 0.5, 2.0, 1.0]
-        elif t < 0.5:
-            # Early-mid: still favor tough strategies
-            phase_priors = [2.5, 1.0, 1.5, 1.2]
-        elif t < 0.7:
-            # Mid: start considering adaptation
-            phase_priors = [2.0, 1.2, 1.2, 1.5]
+        # === Phase-dependent priors (5 experts) ===
+        # Format: [Boulware, Pareto, NiceTFT, Forecast, DealSeeker]
+        if t < 0.15:
+            # Early: hold ground with Boulware, some NiceTFT signaling
+            phase_priors = [3.0, 0.5, 1.5, 0.8, 0.0]
+        elif t < 0.30:
+            phase_priors = [2.5, 0.8, 1.5, 1.2, 0.0]
+        elif t < 0.50:
+            # Mid-early: Boulware + Forecast
+            phase_priors = [2.0, 1.2, 1.5, 2.0, 0.0]
+        elif t < 0.70:
+            # Mid: Forecast + Pareto, some NiceTFT
+            phase_priors = [1.5, 1.5, 1.5, 2.5, 0.3]
         elif t < 0.85:
-            # Late-mid: allow some flexibility
-            phase_priors = [1.5, 1.5, 1.0, 1.5]
-        elif t < 0.95:
-            # Late: still maintain some toughness
-            phase_priors = [1.0, 1.8, 0.8, 1.8]
+            # Mid-late: DealSeeker + Forecast
+            phase_priors = [0.8, 1.5, 1.2, 2.0, 2.0]
         else:
-            # Very late: maximize deal chance with smart concession
-            phase_priors = [0.5, 2.0, 0.7, 2.0]
+            # Late: DealSeeker dominates
+            phase_priors = [0.3, 1.0, 0.8, 1.5, 3.5]
 
         for i in range(self.n_experts):
             scores[i] += phase_priors[i] if i < len(phase_priors) else 1.0
 
         # === Opponent-style adjustments ===
-        if opp_model is not None and len(opp_model.offers) >= 10:
+        if opp_model is not None and len(opp_model.offers) >= 8:
             features = opp_model.get_style_features()
 
-            if features["is_hardheaded"]:
-                # Against hardheaded: use forecast (adapts) or pareto (find mutual gains)
-                scores[0] -= 0.5  # boulware less useful (stalemate risk)
-                scores[1] += 0.5  # pareto can find acceptable bids
-                scores[3] += 1.0  # forecast adapts to hardheaded
+            if features.get("is_tft_style", False) or features.get("is_micro_style", False):
+                # TFT/MiCRO opponents: boost NiceTFT significantly
+                scores[2] += 2.5   # NiceTFT is the right counter-strategy
+                scores[0] -= 1.0   # Boulware will stalemate
+                scores[3] += 0.5   # Forecast can also adapt
+
+            elif features["is_hardheaded"]:
+                # Hardheaded opponent: need to concede to find deals
+                scores[0] -= 0.5
+                scores[1] += 0.5   # Pareto explores space
+                scores[3] += 1.5   # Forecast adapts to stubborn
                 if t > 0.7:
-                    scores[1] += 0.5  # Pareto even more important late
+                    scores[4] += 1.0   # DealSeeker for late agreement
 
             elif features["is_conceder"]:
-                # Against conceder: stay tough with boulware, let them come to us
-                scores[0] += 1.0  # boulware: maintain pressure
-                scores[2] += 0.5  # micro is also good
-                scores[1] -= 0.5  # less need for pareto compromise
+                # Conceder: hold ground, they'll come to us
+                scores[0] += 1.5
+                scores[2] -= 0.5
+                scores[1] -= 0.5
 
-            elif features["is_micro_style"]:
-                # Against MiCRO-style: respond in kind or use forecast
-                scores[2] += 0.5  # mirror micro
-                scores[3] += 0.5  # forecast can adapt
+            # Stalemate detection
+            if features.get("is_stalemate", False):
+                scores[2] += 1.5   # NiceTFT to break stalemate
+                scores[4] += 1.5   # DealSeeker to find any deal
+                scores[0] -= 1.5   # Boulware makes stalemate worse
 
-            # Dynamic concession rate adjustment
+            # Reciprocity: if opponent is reciprocal, reward NiceTFT
+            reciprocity = features.get("reciprocity", 0.5)
+            if reciprocity > 0.6:
+                scores[2] += 0.8
+
             cr = features.get("concession_rate", 0.0)
-            if cr > 0.15:  # Opponent conceding quickly
-                scores[0] += 0.5  # Stay tough
-            elif cr < -0.05:  # Opponent hardening
-                scores[1] += 0.3  # Try pareto
-                scores[3] += 0.3  # Adapt
+            if cr > 0.15:
+                scores[0] += 0.5   # They're conceding, hold firm
+            elif cr < -0.05:
+                scores[3] += 0.5   # They're hardening, adapt
 
         # === Online performance (EMA rewards) ===
         for i in range(self.n_experts):
@@ -166,30 +214,24 @@ class MetaController:
         return scores
 
     def update_reward(self, expert_idx: int, reward: float):
-        """
-        Update the reward estimate for an expert.
-
-        Args:
-            expert_idx: Index of the expert that was used.
-            reward: Reward signal (e.g., utility of accepted offer, or 0 for no deal).
-        """
+        """Update the reward estimate for an expert."""
         if expert_idx < 0 or expert_idx >= self.n_experts:
             return
 
         self.expert_rewards[expert_idx] += reward
         self.expert_counts[expert_idx] += 1
 
-        # Update EMA
-        alpha = 0.3  # EMA smoothing factor
+        alpha = 0.3
         self.expert_ema[expert_idx] = (
             alpha * reward + (1.0 - alpha) * self.expert_ema[expert_idx]
         )
 
-        # Update bandit weights (softmax-style)
         avg_reward = reward
         if self.expert_counts[expert_idx] > 0:
             avg_reward = self.expert_rewards[expert_idx] / self.expert_counts[expert_idx]
-        self.weights[expert_idx] = max(0.1, self.weights[expert_idx] * (1.0 + 0.1 * (avg_reward - 0.5)))
+        self.weights[expert_idx] = max(
+            0.1, self.weights[expert_idx] * (1.0 + 0.1 * (avg_reward - 0.5))
+        )
 
     def get_expert(self, idx: int) -> ExpertBase:
         """Get expert by index."""
