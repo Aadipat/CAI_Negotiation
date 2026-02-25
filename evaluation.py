@@ -23,7 +23,10 @@ from pathlib import Path
 from typing import Any
 
 # ── Output directory setup ──────────────────────────────────────────────────
-OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+_OUTPUT_ROOT = Path(__file__).resolve().parent / "output"
+_OUTPUT_ROOT.mkdir(exist_ok=True)
+_RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = _OUTPUT_ROOT / _RUN_TIMESTAMP
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
@@ -73,7 +76,6 @@ for _sub in ("geniusweb-1.2.1", "others/tudelft_utilities", "others/tudelft_util
 
 from negmas_geniusweb_bridge import ALL_AGENTS, BROKEN_AGENTS
 from negmas_geniusweb_bridge.wrapper import make_geniusweb_negotiator
-
 # ── Import HybridAgent and wrap it for NegMAS ──────────────────────────────
 _feiyang_dir = Path(__file__).resolve().parent
 if str(_feiyang_dir) not in sys.path:
@@ -627,8 +629,7 @@ def evaluate():
 
 
 if __name__ == "__main__":
-    # Tee all stdout/stderr to output/evaluation.log
-    _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Tee all stdout/stderr to output/<timestamp>/evaluation.log
     _log_path = OUTPUT_DIR / "evaluation.log"
     _tee_out = _Tee(sys.stdout, _log_path)
     _tee_err = _Tee(sys.stderr, OUTPUT_DIR / "evaluation_err.log")
