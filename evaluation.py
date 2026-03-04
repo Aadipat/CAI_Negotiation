@@ -57,6 +57,12 @@ from negmas import (
     TimeBasedConcedingNegotiator,
     MiCRONegotiator,
     NaiveTitForTatNegotiator,
+    RandomNegotiator,
+    ToughNegotiator,
+    NiceNegotiator,
+    BoulwareTBNegotiator,
+    ConcederTBNegotiator,
+    LinearTBNegotiator,
     make_issue,
     make_os,
     enumerate_issues,
@@ -101,8 +107,19 @@ from feiyang.hybrid_agent import HybridAgent
 
 # HybridAgent already inherits from SAONegotiator — no wrapping needed.
 
-# ── Debug bundle support ────────────────────────────────────────────────────
+# ── Import teammate agents ──────────────────────────────────────────────────
+from dylan.Group56_Negotiator import Group56_Negotiator
+from zihao.Group6_Negotiator import Group6_Negotiator
+from aadi.time_based_agent import (
+    TimeBasedAspirationConceder,
+    UniqueArgmaxTimeBasedConceder,
+    AdaptiveUniqueArgmaxConceder,
+    NaiveBayesianTimeBasedNegotiator,
+)
+
+# ── Debug bundle support (optional) ─────────────────────────────────────────
 from debug_bundle import DebugBundle, build_bundle_from_negotiation, save_bundle
+_HAS_DEBUG_BUNDLE = True
 
 # ── Configuration ───────────────────────────────────────────────────────────
 SEED = 42
@@ -113,6 +130,26 @@ PER_NEG_TIMEOUT = 2.0  # seconds per negotiation (kills slow agents)
 MAX_DIST = math.sqrt(2.0)  # max Euclidean distance in 2-agent [0,1]² space
 SAVE_BUNDLES = True    # write per-negotiation debug bundles to disk
 BUNDLE_DIR = OUTPUT_DIR / "debug_bundles"
+
+# Agent names that belong to our team (for output labelling)
+TEAMMATE_NAMES: set[str] = {
+    "HybridAgent",
+    "Group56_Negotiator",
+    "Group6_Negotiator",
+    "Aadi-TimeBasedAspiration",
+    "Aadi-UniqueArgmaxConceder",
+    "Aadi-AdaptiveUniqueArgmax",
+    "Aadi-NaiveBayesianTB",
+}
+
+
+def _agent_marker(name: str) -> str:
+    """Return a visual marker for teammate agents."""
+    if name == "HybridAgent":
+        return " <-- [OURS]"
+    if name in TEAMMATE_NAMES:
+        return " [TEAM]"
+    return ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -446,7 +483,7 @@ def run_single_negotiation(
         )
 
         # ── Save debug bundle ──────────────────────────────────────────
-        if SAVE_BUNDLES:
+        if SAVE_BUNDLES and _HAS_DEBUG_BUNDLE:
             try:
                 _bundle_counter += 1
                 bundle = build_bundle_from_negotiation(
@@ -477,7 +514,7 @@ def run_single_negotiation(
         )
 
         # ── Save error bundle ──────────────────────────────────────────
-        if SAVE_BUNDLES:
+        if SAVE_BUNDLES and _HAS_DEBUG_BUNDLE:
             try:
                 _bundle_counter += 1
                 bundle = build_bundle_from_negotiation(scenario, result, seed=SEED)
@@ -653,7 +690,8 @@ def print_calibration_analysis(
     shown = 0
     for aname in ordered:
         is_h = aname == "HybridAgent"
-        if shown >= 15 and not is_h:
+        is_team = aname in TEAMMATE_NAMES
+        if shown >= 15 and not is_h and not is_team:
             continue
         shown += 1
         d = abd[aname]
@@ -661,7 +699,7 @@ def print_calibration_analysis(
         mu = _avg_of(d.get("medium", []))
         hu = _avg_of(d.get("hard", []))
         drop = eu - hu
-        mark = " <--" if is_h else ""
+        mark = _agent_marker(aname)
         print(f"    {aname:<25} {eu:>8.4f} {mu:>8.4f} {hu:>8.4f} {drop:>8.4f}{mark}")
 
     print("=" * 130)
@@ -721,7 +759,7 @@ def print_pairwise_analysis(results: list[NegotiationResult]):
         w, l, d = wins[nm], losses[nm], draws[nm]
         avg = _avg_of(h2h_util.get(nm, []))
         wr = w / g * 100 if g else 0
-        mark = " <--" if nm == "HybridAgent" else ""
+        mark = _agent_marker(nm)
         print(f"  {nm:<25} {g:>6} {w:>5} {l:>5} {d:>5} "
               f"{wr:>6.1f}% {avg:>7.4f}{mark}")
     print("=" * 100)
@@ -849,7 +887,36 @@ def evaluate():
             break
 
     gw_agents["HybridAgent"] = HybridAgent
-    print(f"\nEvaluating {len(gw_agents)} agents (including HybridAgent)")
+
+    # ── NegMAS built-in agents as baselines ──────────────────────────────
+    negmas_baselines = {
+        "NegMAS_Aspiration":   AspirationNegotiator,
+        "NegMAS_TBConceder":   TimeBasedConcedingNegotiator,
+        "NegMAS_MiCRO":        MiCRONegotiator,
+        "NegMAS_TitForTat":    NaiveTitForTatNegotiator,
+        "NegMAS_Random":       RandomNegotiator,
+        "NegMAS_Tough":        ToughNegotiator,
+        "NegMAS_Nice":         NiceNegotiator,
+        "NegMAS_Boulware":     BoulwareTBNegotiator,
+        "NegMAS_Conceder":     ConcederTBNegotiator,
+        "NegMAS_Linear":       LinearTBNegotiator,
+    }
+    gw_agents.update(negmas_baselines)
+
+    # ── Teammate agents ──────────────────────────────────────────────────
+    teammate_agents = {
+        "Group56_Negotiator":              Group56_Negotiator,
+        "Group6_Negotiator":               Group6_Negotiator,
+        "Aadi-TimeBasedAspiration":        TimeBasedAspirationConceder,
+        "Aadi-UniqueArgmaxConceder":       UniqueArgmaxTimeBasedConceder,
+        "Aadi-AdaptiveUniqueArgmax":       AdaptiveUniqueArgmaxConceder,
+        "Aadi-NaiveBayesianTB":            NaiveBayesianTimeBasedNegotiator,
+    }
+    gw_agents.update(teammate_agents)
+
+    print(f"\nEvaluating {len(gw_agents)} agents (including HybridAgent "
+          f"+ {len(negmas_baselines)} NegMAS baselines "
+          f"+ {len(teammate_agents)} teammate agents)")
     print(f"Skipped {len(SKIP_AGENTS)} known-broken agents\n")
 
     # ── 2. Build diverse scenarios ─────────────────────────────────────────
@@ -1185,7 +1252,7 @@ def evaluate():
           f"{'Score':>8}")
     print("-" * 170)
     for rank, s in enumerate(agent_stats, 1):
-        marker = " <--" if s["name"] == "HybridAgent" else ""
+        marker = _agent_marker(s["name"])
         print(f"{rank:<6} {s['name']:<25} {s['runs']:>6} {s['agreed']:>7} "
               f"{s['agree_rate'] * 100:>5.1f}% {s['avg_u']:>8.4f} {s['util_under_agree']:>8.4f} "
               f"{s['avg_welfare']:>8.4f} "
@@ -1198,6 +1265,24 @@ def evaluate():
         if s["name"] == "HybridAgent":
             print(f"\n>>> HybridAgent ranked #{rank} out of {len(agent_stats)} agents <<<")
             break
+
+    # ── Teammate Agent Summary ─────────────────────────────────────────────────
+    team_stats = [s for s in agent_stats if s["name"] in TEAMMATE_NAMES]
+    if team_stats:
+        print("\n" + "=" * 130)
+        print("TEAMMATE AGENT SUMMARY")
+        print("  These are agents built by our team, shown here for easy comparison.")
+        print("=" * 130)
+        print(f"  {'Rank':<6} {'Agent':<28} {'Rate%':>6} {'AvgUtil':>8} "
+              f"{'NOpt':>7} {'HardU':>7} {'Score':>8}")
+        print("  " + "-" * 78)
+        for s in team_stats:
+            r = next(i + 1 for i, x in enumerate(agent_stats) if x["name"] == s["name"])
+            tag = "[OURS]" if s["name"] == "HybridAgent" else "[TEAM]"
+            print(f"  {r:<6} {s['name']:<28} {s['agree_rate']*100:>5.1f}% "
+                  f"{s['avg_u']:>8.4f} {s['avg_nopt']:>7.4f} "
+                  f"{s['hard_u']:>7.4f} {s['composite']:>8.4f}  {tag}")
+        print("=" * 130)
 
     # ── 8b. Calibration, pairwise, and critical analysis ──────────────
     print_calibration_analysis(results, agent_stats)
