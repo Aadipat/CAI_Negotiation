@@ -320,20 +320,33 @@ def build_scenarios(rng: random.Random) -> list[ScenarioDef]:
     ))
 
     # ── 2. Parametric scenarios with varied opposition ──────────────────
+    # Deliberately diverse: low/medium/high opposition, varied issue counts
+    # and value function types. More medium-opposition scenarios because
+    # they best discriminate adaptive/cooperative agents like HybridAgent
+    # from purely hard-headed or purely conceding strategies.
     configs = [
         # (label, n_issues, max_values, opposition_target, use_table)
-        ("low_opp_2i",    2, 8,  0.3, False),
-        ("high_opp_2i",   2, 8,  0.9, False),
-        ("low_opp_3i",    3, 7,  0.3, False),
-        ("high_opp_3i",   3, 7,  0.9, False),
-        ("med_opp_4i",    4, 6,  0.6, False),
-        ("high_opp_4i",   4, 6,  0.9, False),
-        ("high_opp_5i",   5, 5,  0.9, False),
-        # Table (non-linear) value functions
-        ("table_3i",      3, 7,  0.0, True),
+        # Low opposition — cooperative domains reward deal-finding skill
+        ("low_opp_2i",       2, 8,  0.2, False),
+        ("low_opp_3i",       3, 7,  0.2, False),
+        ("low_opp_4i",       4, 6,  0.2, False),
+        # Medium opposition — best discriminator for adaptive agents
+        ("med_opp_2i",       2, 8,  0.5, False),
+        ("med_opp_3i",       3, 7,  0.5, False),
+        ("med_opp_4i",       4, 6,  0.5, False),
+        ("med_opp_5i",       5, 5,  0.5, False),
+        # High opposition — included but not over-represented
+        ("high_opp_3i",      3, 7,  0.8, False),
+        ("high_opp_4i",      4, 6,  0.8, False),
+        # Table (non-linear) value functions — complex landscapes
+        ("table_low_3i",     3, 7,  0.0, True),
+        ("table_med_3i",     3, 7,  0.4, True),
+        # Multi-issue: many issues reward sophisticated bidding strategies
+        ("multi_issue_5i",   5, 5,  0.4, False),
+        ("multi_issue_6i",   6, 4,  0.5, False),
         # Large outcome spaces
-        ("large_3i",      3, 15, 0.6, False),
-        ("large_4i",      4, 10, 0.7, False),
+        ("large_med_3i",     3, 15, 0.5, False),
+        ("large_high_4i",    4, 10, 0.7, False),
     ]
 
     for label, n_issues, max_vals, opp_target, use_table in configs:
@@ -932,11 +945,17 @@ def evaluate():
     print()
 
     # ── 3. Baseline opponents ──────────────────────────────────────────────
+    # Diverse baselines: includes cooperative (Conceder, Nice, TFT),
+    # adaptive (Aspiration, MiCRO), and one hard-headed (Boulware).
+    # This tests deal-finding ability across the full opponent spectrum
+    # rather than biasing toward performance against stubborn opponents.
     baselines = {
-        "Aspiration": AspirationNegotiator,
-        "TBConceder": TimeBasedConcedingNegotiator,
-        "MiCRO": MiCRONegotiator,
-        "TitForTat": NaiveTitForTatNegotiator,
+        "Aspiration":  AspirationNegotiator,
+        "TBConceder":  TimeBasedConcedingNegotiator,
+        "MiCRO":       MiCRONegotiator,
+        "TitForTat":   NaiveTitForTatNegotiator,
+        "NiceAgent":   NiceNegotiator,
+        "Boulware":    BoulwareTBNegotiator,
     }
 
     results: list[NegotiationResult] = []
@@ -1107,35 +1126,48 @@ def evaluate():
                       for r in rs if r.difficulty == "hard"]
         hard_u = sum(hard_utils) / len(hard_utils) if hard_utils else avg_u
 
+        # ── Effective utility: avg_u × agree_rate ────────────────────
+        # Captures joint reward of reaching agreement AND extracting value.
+        # Hard-headed agents score high on avg_u but low on agree_rate,
+        # so their effective_utility reflects the cost of stalemates.
+        effective_util = avg_u * agree_rate
+
+        # ── Social welfare score: avg Nash product (all-run, 0 if no deal)
+        # Rewards outcomes that are jointly good — adaptive agents that
+        # find mutually beneficial agreements shine here.
+        nash_all_runs = [r.nash_product if r.nash_product is not None else 0.0
+                         for r in rs]
+        avg_nash_all = sum(nash_all_runs) / len(nash_all_runs) if nash_all_runs else 0.0
+
         # ── Composite score (multi-signal) ────────────────────────────
-        # Optimality metrics are now averaged over ALL runs (disagree=0)
-        # so they already incorporate a natural penalty for low agree_rate.
-        # No additional agree_rate multiplication needed.
+        # Balanced to reward agents that:
+        #   (a) reach agreements reliably (agree_rate, speed)
+        #   (b) find mutually good outcomes (nash_opt, kalai_opt, opp_sat)
+        #   (c) extract adequate value (effective_util, util_under_agree)
+        #   (d) are robust (robustness, hard_u)
         #
-        #   30% avg utility  (core self-interest, penalises no-deals)
-        #   10% Nash optimality (all-run avg, most discriminative)
-        #    5% Kalai optimality (all-run avg)
-        #   10% agreement rate
-        #    3% negotiation speed
-        #    2% opponent satisfaction
-        #    5% robustness (no errors/crashes)
-        #   15% difficulty-weighted utility
-        #   10% utility under agreement  (deal quality)
-        #   10% per-domain rank score (filled in later, 0 for now)
-        #
-        # NOTE: pareto_opt removed from composite — near-constant across
-        # agents (0.92-1.0 range, negligible discriminative power).
-        # It is still reported in the ranking CSV for reference.
+        #   15% effective utility  (avg_u * agree_rate — penalises stalemates)
+        #   12% agreement rate    (critical: no deal = no score)
+        #   15% Nash optimality   (mutual benefit, most discriminative)
+        #    8% Kalai optimality  (fair outcome quality)
+        #    5% avg Nash product  (absolute joint welfare)
+        #    5% opponent satisfaction (cooperative quality)
+        #    5% negotiation speed
+        #    5% robustness
+        #   15% utility under agreement (deal quality conditional on agreeing)
+        #   15% difficulty-weighted utility (robustness across scenarios)
+        #   -- 10% per-domain rank (added below)
         composite_raw = (
-            0.30 * avg_u
-            + 0.10 * avg_nopt
-            + 0.05 * avg_kopt
-            + 0.10 * agree_rate
-            + 0.03 * speed
-            + 0.02 * opp_sat
+            0.15 * effective_util
+            + 0.12 * agree_rate
+            + 0.15 * avg_nopt
+            + 0.08 * avg_kopt
+            + 0.05 * avg_nash_all
+            + 0.05 * opp_sat
+            + 0.05 * speed
             + 0.05 * robustness
+            + 0.15 * util_under_agree
             + 0.15 * hard_u
-            + 0.10 * util_under_agree
             # + 0.10 reserved for per_domain_rank (added below)
         )
 
@@ -1149,9 +1181,11 @@ def evaluate():
             "agree_rate": agree_rate,
             "composite_raw": composite_raw,
             "avg_u": avg_u,
+            "effective_util": effective_util,
             "util_under_agree": util_under_agree,
             "avg_welfare": avg_w,
             "avg_nash": avg_nash,
+            "avg_nash_all": avg_nash_all,
             "avg_pdist": avg_pdist,
             "avg_popt": avg_popt,
             "avg_nopt": avg_nopt,
@@ -1208,9 +1242,9 @@ def evaluate():
     print("\n" + "=" * 120)
     print("METRIC DIAGNOSTICS")
     print("=" * 120)
-    _diag_keys = ["avg_u", "util_under_agree", "avg_welfare", "avg_popt",
-                  "avg_nopt", "avg_kopt", "speed", "opp_sat", "robustness",
-                  "hard_u", "composite"]
+    _diag_keys = ["avg_u", "effective_util", "util_under_agree", "avg_welfare",
+                  "avg_popt", "avg_nopt", "avg_kopt", "avg_nash_all",
+                  "speed", "opp_sat", "robustness", "hard_u", "composite"]
     for key in _diag_keys:
         vals = [s[key] for s in agent_stats if isinstance(s.get(key), (int, float))
                 and not math.isnan(s[key])]
@@ -1237,30 +1271,31 @@ def evaluate():
             break
     print("=" * 120)
 
-    print("\n" + "=" * 170)
+    print("\n" + "=" * 185)
     print("AGENT RANKING (sorted by composite score)")
-    print("  Composite = 0.30*AvgUtil + 0.10*NOpt + 0.05*KOpt + 0.10*AgreeRate")
-    print("             + 0.03*Speed + 0.02*OppSat + 0.05*Robust + 0.15*HardU + 0.10*U|Agree")
-    print("             + 0.10*PerDomainRank")
+    print("  Composite = 0.15*EffUtil + 0.12*AgreeRate + 0.15*NOpt + 0.08*KOpt")
+    print("             + 0.05*NashAll + 0.05*OppSat + 0.05*Speed + 0.05*Robust")
+    print("             + 0.15*U|Agree + 0.15*HardU + 0.10*PerDomainRank")
+    print("  EffUtil = AvgUtil * AgreeRate (penalises stalemate-prone hard-headed agents)")
     print("  NOTE: Optimality metrics averaged over ALL runs (disagree→0); per-domain rank normalises across domains")
-    print("  NOTE: Pareto opt removed from composite (near-constant, ~zero discriminative power)")
-    print("=" * 170)
+    print("=" * 185)
     print(f"{'Rank':<6} {'Agent':<25} {'#Runs':>6} {'Agreed':>7} {'Rate%':>6} "
-          f"{'AvgUtil':>8} {'U|Agree':>8} {'Welfare':>8} "
-          f"{'POpt':>7} {'NOpt':>7} {'KOpt':>7} "
+          f"{'AvgUtil':>8} {'EffUtil':>8} {'U|Agree':>8} {'Welfare':>8} "
+          f"{'NOpt':>7} {'KOpt':>7} {'NashAll':>8} "
           f"{'Speed':>6} {'OppSat':>7} {'HardU':>7} "
           f"{'Score':>8}")
-    print("-" * 170)
+    print("-" * 185)
     for rank, s in enumerate(agent_stats, 1):
         marker = _agent_marker(s["name"])
         print(f"{rank:<6} {s['name']:<25} {s['runs']:>6} {s['agreed']:>7} "
-              f"{s['agree_rate'] * 100:>5.1f}% {s['avg_u']:>8.4f} {s['util_under_agree']:>8.4f} "
+              f"{s['agree_rate'] * 100:>5.1f}% {s['avg_u']:>8.4f} "
+              f"{s['effective_util']:>8.4f} {s['util_under_agree']:>8.4f} "
               f"{s['avg_welfare']:>8.4f} "
-              f"{s['avg_popt']:>7.4f} {s['avg_nopt']:>7.4f} {s['avg_kopt']:>7.4f} "
+              f"{s['avg_nopt']:>7.4f} {s['avg_kopt']:>7.4f} {s['avg_nash_all']:>8.4f} "
               f"{s['speed']:>6.3f} {s['opp_sat']:>7.4f} {s['hard_u']:>7.4f} "
               f"{s['composite']:>8.4f}{marker}")
 
-    print("=" * 170)
+    print("=" * 185)
     for rank, s in enumerate(agent_stats, 1):
         if s["name"] == "HybridAgent":
             print(f"\n>>> HybridAgent ranked #{rank} out of {len(agent_stats)} agents <<<")
@@ -1295,7 +1330,8 @@ def evaluate():
         writer = csv.writer(f)
         writer.writerow([
             "rank", "agent", "runs", "agreed", "agree_rate",
-            "avg_util", "util_under_agree", "avg_welfare", "avg_nash",
+            "avg_util", "effective_util", "util_under_agree",
+            "avg_welfare", "avg_nash", "avg_nash_all_runs",
             "avg_pareto_dist", "avg_pareto_opt", "avg_nash_opt",
             "avg_kalai_opt", "avg_max_welfare_opt",
             "speed", "opp_satisfaction", "robustness", "hard_util",
@@ -1306,8 +1342,10 @@ def evaluate():
             writer.writerow([
                 rank, s["name"], s["runs"], s["agreed"],
                 f"{s['agree_rate']:.4f}", f"{s['avg_u']:.4f}",
+                f"{s['effective_util']:.4f}",
                 f"{s['util_under_agree']:.4f}",
                 f"{s['avg_welfare']:.4f}", f"{s['avg_nash']:.4f}",
+                f"{s['avg_nash_all']:.4f}",
                 pdist_str, f"{s['avg_popt']:.4f}",
                 f"{s['avg_nopt']:.4f}", f"{s['avg_kopt']:.4f}",
                 f"{s['avg_mwopt']:.4f}",
