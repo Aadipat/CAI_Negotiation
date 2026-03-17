@@ -4,3 +4,4 @@ venv
 *.txt
 *.csv
 __pycache__/
+output

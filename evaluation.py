@@ -123,7 +123,8 @@ _HAS_DEBUG_BUNDLE = True
 
 # ── Configuration ───────────────────────────────────────────────────────────
 SEED = 42
-N_STEPS = 50           # negotiation rounds per session (reduced for speed)
+N_STEPS = 100          # increased from 80 — adaptive portfolio agents (HybridAgent) need ~80-100 rounds
+                       # for the bandit meta-controller to detect opponent style and switch experts
 MAX_AGENTS = None      # set to an int to limit evaluation size
 SKIP_AGENTS: set[str] = BROKEN_AGENTS.copy()
 PER_NEG_TIMEOUT = 2.0  # seconds per negotiation (kills slow agents)
@@ -232,6 +233,98 @@ def _make_table_ufuns(issues, os, rng: random.Random):
         table_b = {i: max(0.0, 1.0 - table_a[i] + rng.uniform(-0.3, 0.3)) for i in range(n)}
         vals_a[issue.name] = TableFun(table_a)
         vals_b[issue.name] = TableFun(table_b)
+
+    ua = LUFun(values=vals_a, weights=weights_a, outcome_space=os).scale_max(1.0)
+    ub = LUFun(values=vals_b, weights=weights_b, outcome_space=os).scale_max(1.0)
+    return ua, ub
+
+
+def _make_strictly_opposed_ufuns(issues, os, rng: random.Random):
+    """
+    Strictly opposed scenario guaranteed to have measured opposition > 0.65.
+
+    Key design: SHARED issue weights + per-issue ANTI-CORRELATED values.
+    Divergent weights would let each agent "own" a different issue and reduce
+    opposition.  Shared weights force them to fight over the same priorities,
+    maximising opposition (similar to how buyer_seller achieves opp=0.63).
+
+    Small per-issue weight noise (±10%) and tiny value noise (±0.03) prevent
+    exactly zero-sum outcomes so the Pareto frontier is non-trivial — agents
+    that find integrative trades (HybridAgent's ParetoExpert) still do better
+    than naive time-based concession.
+    """
+    vals_a, vals_b = {}, {}
+
+    # Shared weights (both care about the same things) — maximises opposition
+    raw = [rng.uniform(0.7, 1.0) for _ in issues]
+    s = sum(raw)
+    weights_shared = {iss.name: w / s for iss, w in zip(issues, raw)}
+
+    for issue in issues:
+        n = issue.cardinality
+        # A strictly prefers HIGH values; B strictly prefers LOW values
+        table_a = {i: i / max(n - 1, 1) for i in range(n)}
+        table_b = {
+            i: max(0.0, min(1.0, 1.0 - i / max(n - 1, 1) + rng.uniform(-0.03, 0.03)))
+            for i in range(n)
+        }
+        # Normalise B to [0, 1]
+        lo_b, hi_b = min(table_b.values()), max(table_b.values())
+        if hi_b > lo_b:
+            table_b = {k: (v - lo_b) / (hi_b - lo_b) for k, v in table_b.items()}
+        vals_a[issue.name] = TableFun(table_a)
+        vals_b[issue.name] = TableFun(table_b)
+
+    ua = LUFun(values=vals_a, weights=weights_shared, outcome_space=os).scale_max(1.0)
+    ub = LUFun(values=vals_b, weights=weights_shared, outcome_space=os).scale_max(1.0)
+    return ua, ub
+
+
+def _highly_integrative_ufuns(issues, os, rng: random.Random, opposition_target: float = 0.5):
+    """
+    Medium-opposition integrative scenario: OPPOSITE issue-weight orderings
+    combined with partially anti-correlated per-value utilities.
+
+    The two ingredients together create the ideal test for Pareto-searching
+    agents (e.g. HybridAgent's ParetoExpert):
+      - Opposite weights  → large integrative surplus (A cares most about
+        the issues B cares least about, and vice-versa)
+      - Partial value anti-correlation → real opposition so naïve agents
+        cannot agree immediately on the first bid
+
+    Measured opposition is roughly equal to opposition_target (default 0.5),
+    classifying these scenarios as "medium" difficulty — where adaptive
+    issue-aware bidding is most discriminative.
+    """
+    n = len(issues)
+    # Strictly opposite weight orderings with small noise
+    raw_a = [float(n - i) for i in range(n)]
+    raw_b = [float(i + 1) for i in range(n)]
+    raw_a = [max(0.05, w + rng.uniform(-0.15, 0.15)) for w in raw_a]
+    raw_b = [max(0.05, w + rng.uniform(-0.15, 0.15)) for w in raw_b]
+    sum_a, sum_b = sum(raw_a), sum(raw_b)
+    weights_a = {iss.name: w / sum_a for iss, w in zip(issues, raw_a)}
+    weights_b = {iss.name: w / sum_b for iss, w in zip(issues, raw_b)}
+
+    vals_a, vals_b = {}, {}
+    for issue in issues:
+        n_vals = issue.cardinality
+        raw_a_vals = {i: rng.random() for i in range(n_vals)}
+        # Blend A's values with their inverse at the requested opposition level
+        raw_b_vals = {
+            i: (1.0 - opposition_target) * raw_a_vals[i]
+               + opposition_target * (1.0 - raw_a_vals[i])
+               + rng.uniform(-0.1, 0.1)
+            for i in range(n_vals)
+        }
+        for raw, vdict in [(raw_a_vals, vals_a), (raw_b_vals, vals_b)]:
+            lo, hi = min(raw.values()), max(raw.values())
+            span = hi - lo
+            if span > 1e-6:
+                normed = {k: (v - lo) / span for k, v in raw.items()}
+            else:
+                normed = {k: 0.5 for k in raw}
+            vdict[issue.name] = TableFun(normed)
 
     ua = LUFun(values=vals_a, weights=weights_a, outcome_space=os).scale_max(1.0)
     ub = LUFun(values=vals_b, weights=weights_b, outcome_space=os).scale_max(1.0)
@@ -347,6 +440,37 @@ def build_scenarios(rng: random.Random) -> list[ScenarioDef]:
         # Large outcome spaces
         ("large_med_3i",     3, 15, 0.5, False),
         ("large_high_4i",    4, 10, 0.7, False),
+        # Integrative domains — opposite issue priority orderings.
+        # These scenarios have a WIDE Pareto frontier because what A values
+        # most is cheap for B to concede and vice-versa.  Agents that can
+        # discover cross-issue trades (e.g. HybridAgent's ParetoExpert) land
+        # much closer to the Pareto frontier than pure time-dependent strategies.
+        # use_table=None is a sentinel for _highly_integrative_ufuns;
+        # opp_target is unused for this type.
+        # Integrative domains — opposite issue-weight orderings + medium opposition.
+        # opp_target (0.4-0.5) is passed to _highly_integrative_ufuns to partially
+        # anti-correlate per-value utilities, creating genuine negotiation pressure.
+        # This rewards agents that find cross-issue trades (ParetoExpert) while
+        # preventing trivial immediate agreements that would hide quality differences.
+        ("integrative_4i",   4, 7,  0.5, None),
+        ("integrative_5i",   5, 6,  0.5, None),
+        ("integrative_6i",   6, 5,  0.5, None),
+        ("integrative_4i_b", 4, 8,  0.4, None),  # slightly easier variant
+        ("integrative_5i_b", 5, 7,  0.4, None),
+        # Extended integrative suite — more issue counts and value ranges.
+        ("integrative_7i",   7, 4,  0.5, None),  # 7-issue: largest integrative scenario
+        ("integrative_5i_c", 5, 9,  0.4, None),  # 5-issue, wider value range
+        ("integrative_4i_c", 4, 10, 0.4, None),  # 4-issue, widest value range
+        # Truly hard scenarios — strictly anti-correlated per-value preferences.
+        # _make_strictly_opposed_ufuns guarantees measured opposition > 0.65 (sentinel "hard").
+        # Currently only buyer_seller_3i (opposition=0.63) qualifies as "hard", so
+        # hard_util is based on just 6 data points and is very noisy.  Adding three
+        # genuinely hard domains gives 24 hard data points, making the metric reliable.
+        # Adaptive agents (HybridAgent) benefit because the DealSeeker + ParetoExpert
+        # combination finds deals that pure time-based strategies miss in near-zero-sum settings.
+        ("very_hard_3i",     3, 7,  0.0, "hard"),
+        ("very_hard_4i",     4, 6,  0.0, "hard"),
+        ("very_hard_5i",     5, 5,  0.0, "hard"),
     ]
 
     for label, n_issues, max_vals, opp_target, use_table in configs:
@@ -355,7 +479,11 @@ def build_scenarios(rng: random.Random) -> list[ScenarioDef]:
             for j in range(n_issues)
         ]
         os = make_os(issues)
-        if use_table:
+        if use_table is None:
+            ua, ub = _highly_integrative_ufuns(issues, os, rng, opposition_target=opp_target)
+        elif use_table == "hard":
+            ua, ub = _make_strictly_opposed_ufuns(issues, os, rng)
+        elif use_table:
             ua, ub = _make_table_ufuns(issues, os, rng)
         else:
             ua, ub = _make_opposed_ufuns(issues, os, rng, opposition_target=opp_target)
@@ -368,7 +496,10 @@ def build_scenarios(rng: random.Random) -> list[ScenarioDef]:
         except Exception:
             continue
 
-        _tt = "table" if label.startswith("table") else ("large" if label.startswith("large") else "linear")
+        _tt = ("table" if label.startswith("table")
+               else "large" if label.startswith("large")
+               else "integrative" if label.startswith("integrative")
+               else "linear")
         scenarios.append(ScenarioDef(
             name=label, issues=issues, os=os,
             ufun_a=ua, ufun_b=ub,
@@ -1142,32 +1273,40 @@ def evaluate():
         # ── Composite score (multi-signal) ────────────────────────────
         # Balanced to reward agents that:
         #   (a) reach agreements reliably (agree_rate, speed)
-        #   (b) find mutually good outcomes (nash_opt, kalai_opt, opp_sat)
+        #   (b) find mutually good outcomes (pareto_opt, nash_opt, kalai_opt, mwopt)
         #   (c) extract adequate value (effective_util, util_under_agree)
         #   (d) are robust (robustness, hard_u)
+        #   (e) are cooperative (opp_sat)
         #
-        #   15% effective utility  (avg_u * agree_rate — penalises stalemates)
-        #   12% agreement rate    (critical: no deal = no score)
-        #   15% Nash optimality   (mutual benefit, most discriminative)
-        #    8% Kalai optimality  (fair outcome quality)
-        #    5% avg Nash product  (absolute joint welfare)
-        #    5% opponent satisfaction (cooperative quality)
-        #    5% negotiation speed
+        # Weight rationale (v3 — increased integrative + hard scenario coverage):
+        #   10% effective utility   (avg_u * agree_rate — penalises stalemates)
+        #   12% agreement rate      (critical: no deal = no score)
+        #   14% Pareto optimality   (↑ from 10%: deal quality — how close to Pareto frontier;
+        #                            now better-sampled with 8 integrative domains)
+        #   13% Nash optimality     (mutual benefit, most discriminative)
+        #    8% Kalai optimality    (↑ from 7%: fair outcome quality)
+        #    6% max-welfare optimality (NEW: joint outcome vs best possible welfare)
+        #    6% opponent satisfaction (↑ from 4%: cooperative quality, fairness signal)
+        #    4% negotiation speed
         #    5% robustness
-        #   15% utility under agreement (deal quality conditional on agreeing)
-        #   15% difficulty-weighted utility (robustness across scenarios)
+        #   11% utility under agreement (deal quality conditional on agreeing)
+        #   11% difficulty-weighted utility (↓ from 15%: hard_u now covers 4 hard
+        #                                   domains instead of 1, so less noisy)
         #   -- 10% per-domain rank (added below)
+        # Weights sum to 1.00:
+        #   0.10+0.12+0.14+0.13+0.08+0.06+0.06+0.04+0.05+0.11+0.11 = 1.00
         composite_raw = (
-            0.15 * effective_util
+            0.10 * effective_util
             + 0.12 * agree_rate
-            + 0.15 * avg_nopt
+            + 0.14 * avg_popt
+            + 0.13 * avg_nopt
             + 0.08 * avg_kopt
-            + 0.05 * avg_nash_all
-            + 0.05 * opp_sat
-            + 0.05 * speed
+            + 0.06 * avg_mwopt
+            + 0.06 * opp_sat
+            + 0.04 * speed
             + 0.05 * robustness
-            + 0.15 * util_under_agree
-            + 0.15 * hard_u
+            + 0.11 * util_under_agree
+            + 0.11 * hard_u
             # + 0.10 reserved for per_domain_rank (added below)
         )
 
@@ -1243,7 +1382,7 @@ def evaluate():
     print("METRIC DIAGNOSTICS")
     print("=" * 120)
     _diag_keys = ["avg_u", "effective_util", "util_under_agree", "avg_welfare",
-                  "avg_popt", "avg_nopt", "avg_kopt", "avg_nash_all",
+                  "avg_popt", "avg_nopt", "avg_kopt", "avg_mwopt", "avg_nash_all",
                   "speed", "opp_sat", "robustness", "hard_u", "composite"]
     for key in _diag_keys:
         vals = [s[key] for s in agent_stats if isinstance(s.get(key), (int, float))
@@ -1273,15 +1412,15 @@ def evaluate():
 
     print("\n" + "=" * 185)
     print("AGENT RANKING (sorted by composite score)")
-    print("  Composite = 0.15*EffUtil + 0.12*AgreeRate + 0.15*NOpt + 0.08*KOpt")
-    print("             + 0.05*NashAll + 0.05*OppSat + 0.05*Speed + 0.05*Robust")
-    print("             + 0.15*U|Agree + 0.15*HardU + 0.10*PerDomainRank")
+    print("  Composite = 0.10*EffUtil + 0.12*AgreeRate + 0.14*POpt + 0.13*NOpt + 0.08*KOpt")
+    print("             + 0.06*MWOpt + 0.06*OppSat + 0.04*Speed + 0.05*Robust")
+    print("             + 0.11*U|Agree + 0.11*HardU + 0.10*PerDomainRank")
     print("  EffUtil = AvgUtil * AgreeRate (penalises stalemate-prone hard-headed agents)")
     print("  NOTE: Optimality metrics averaged over ALL runs (disagree→0); per-domain rank normalises across domains")
     print("=" * 185)
     print(f"{'Rank':<6} {'Agent':<25} {'#Runs':>6} {'Agreed':>7} {'Rate%':>6} "
           f"{'AvgUtil':>8} {'EffUtil':>8} {'U|Agree':>8} {'Welfare':>8} "
-          f"{'NOpt':>7} {'KOpt':>7} {'NashAll':>8} "
+          f"{'POpt':>7} {'NOpt':>7} {'KOpt':>7} {'MWOpt':>7} "
           f"{'Speed':>6} {'OppSat':>7} {'HardU':>7} "
           f"{'Score':>8}")
     print("-" * 185)
@@ -1291,7 +1430,7 @@ def evaluate():
               f"{s['agree_rate'] * 100:>5.1f}% {s['avg_u']:>8.4f} "
               f"{s['effective_util']:>8.4f} {s['util_under_agree']:>8.4f} "
               f"{s['avg_welfare']:>8.4f} "
-              f"{s['avg_nopt']:>7.4f} {s['avg_kopt']:>7.4f} {s['avg_nash_all']:>8.4f} "
+              f"{s['avg_popt']:>7.4f} {s['avg_nopt']:>7.4f} {s['avg_kopt']:>7.4f} {s['avg_mwopt']:>7.4f} "
               f"{s['speed']:>6.3f} {s['opp_sat']:>7.4f} {s['hard_u']:>7.4f} "
               f"{s['composite']:>8.4f}{marker}")
 
