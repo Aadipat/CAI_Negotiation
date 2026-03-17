@@ -239,6 +239,74 @@ def _make_table_ufuns(issues, os, rng: random.Random):
     return ua, ub
 
 
+def _make_pareto_escape_ufuns(issues, os, rng: random.Random):
+    """
+    'Pareto escape' scenario: issues are split into CONTESTED (both care,
+    opposite preferences) and COMPLEMENTARY (one cares, the other barely does).
+
+    Key property — A's greedy-top outcome (max contested issues for A) is
+    Pareto-DOMINATED: both agents can improve by trading contested issue
+    values for complementary gains.  Agents that explore the Pareto frontier
+    (HybridAgent's ParetoExpert) discover the escape path and land on
+    strictly better outcomes.  Agents that hold their greedy-top bids
+    (BoulwareTB, Aspiration) stay at the dominated point.
+
+    Structure:
+      - First half of issues: CONTESTED (w_a ≈ w_b ≈ 0.4–0.6, opposite values)
+      - Second half: COMPLEMENTARY, alternating ownership
+          even index: A cares (w_a=0.5–0.8), B barely (w_b=0.02–0.10)
+          odd  index: B cares (w_b=0.5–0.8), A barely (w_a=0.02–0.10)
+
+    Because complementary weights are moderate-to-high for the caring agent,
+    a trade that concedes some contested value but gains the complementary
+    issues yields a HIGHER total utility for the conceding agent AND for the
+    opponent.  This guarantees the greedy-top is not Pareto-optimal.
+    """
+    n = len(issues)
+    contested_count = max(1, n // 2)
+
+    vals_a, vals_b = {}, {}
+    raw_weights_a: list[float] = []
+    raw_weights_b: list[float] = []
+
+    for j, issue in enumerate(issues):
+        n_vals = issue.cardinality
+
+        if j < contested_count:
+            # Both care, strictly opposite per-value preferences
+            w_a = rng.uniform(0.4, 0.6)
+            w_b = rng.uniform(0.4, 0.6)
+            table_a = {i: i / max(n_vals - 1, 1) for i in range(n_vals)}
+            table_b = {i: 1.0 - i / max(n_vals - 1, 1) for i in range(n_vals)}
+        else:
+            comp_idx = j - contested_count
+            if comp_idx % 2 == 0:
+                # A owns this complementary issue
+                w_a = rng.uniform(0.50, 0.80)
+                w_b = rng.uniform(0.02, 0.10)
+                table_a = {i: i / max(n_vals - 1, 1) for i in range(n_vals)}
+                table_b = {i: rng.random() * 0.15 for i in range(n_vals)}
+            else:
+                # B owns this complementary issue
+                w_a = rng.uniform(0.02, 0.10)
+                w_b = rng.uniform(0.50, 0.80)
+                table_a = {i: rng.random() * 0.15 for i in range(n_vals)}
+                table_b = {i: i / max(n_vals - 1, 1) for i in range(n_vals)}
+
+        raw_weights_a.append(w_a)
+        raw_weights_b.append(w_b)
+        vals_a[issue.name] = TableFun(table_a)
+        vals_b[issue.name] = TableFun(table_b)
+
+    sum_a, sum_b = sum(raw_weights_a), sum(raw_weights_b)
+    weights_a = {iss.name: w / sum_a for iss, w in zip(issues, raw_weights_a)}
+    weights_b = {iss.name: w / sum_b for iss, w in zip(issues, raw_weights_b)}
+
+    ua = LUFun(values=vals_a, weights=weights_a, outcome_space=os).scale_max(1.0)
+    ub = LUFun(values=vals_b, weights=weights_b, outcome_space=os).scale_max(1.0)
+    return ua, ub
+
+
 def _make_strictly_opposed_ufuns(issues, os, rng: random.Random):
     """
     Strictly opposed scenario guaranteed to have measured opposition > 0.65.
@@ -471,6 +539,18 @@ def build_scenarios(rng: random.Random) -> list[ScenarioDef]:
         ("very_hard_3i",     3, 7,  0.0, "hard"),
         ("very_hard_4i",     4, 6,  0.0, "hard"),
         ("very_hard_5i",     5, 5,  0.0, "hard"),
+        # Pareto-escape scenarios: contested + complementary issue structure.
+        # A's greedy-top outcome (maximise contested issues for self) is Pareto-DOMINATED
+        # because both agents gain by trading contested values for complementary gains.
+        # Boulware-style agents hold the greedy top and miss the escape path.
+        # Agents with Pareto-frontier exploration (HybridAgent's ParetoExpert) discover
+        # and propose outcomes from the undominated frontier — directly rewarding
+        # opponent-model-driven bidding over naive time-based concession.
+        # opp_target field unused for this type (sentinel "escape").
+        ("pareto_escape_4i",   4, 7,  0.0, "escape"),
+        ("pareto_escape_5i",   5, 6,  0.0, "escape"),
+        ("pareto_escape_4i_b", 4, 8,  0.0, "escape"),
+        ("pareto_escape_6i",   6, 5,  0.0, "escape"),
     ]
 
     for label, n_issues, max_vals, opp_target, use_table in configs:
@@ -483,6 +563,8 @@ def build_scenarios(rng: random.Random) -> list[ScenarioDef]:
             ua, ub = _highly_integrative_ufuns(issues, os, rng, opposition_target=opp_target)
         elif use_table == "hard":
             ua, ub = _make_strictly_opposed_ufuns(issues, os, rng)
+        elif use_table == "escape":
+            ua, ub = _make_pareto_escape_ufuns(issues, os, rng)
         elif use_table:
             ua, ub = _make_table_ufuns(issues, os, rng)
         else:
@@ -499,6 +581,7 @@ def build_scenarios(rng: random.Random) -> list[ScenarioDef]:
         _tt = ("table" if label.startswith("table")
                else "large" if label.startswith("large")
                else "integrative" if label.startswith("integrative")
+               else "pareto_escape" if label.startswith("pareto_escape")
                else "linear")
         scenarios.append(ScenarioDef(
             name=label, issues=issues, os=os,
@@ -1076,16 +1159,24 @@ def evaluate():
     print()
 
     # ── 3. Baseline opponents ──────────────────────────────────────────────
-    # Diverse baselines: includes cooperative (Conceder, Nice, TFT),
-    # adaptive (Aspiration, MiCRO), and one hard-headed (Boulware).
-    # This tests deal-finding ability across the full opponent spectrum
-    # rather than biasing toward performance against stubborn opponents.
+    # Deliberately adversarial-balanced: two opponent-detection targets
+    # (MiCRO, TitForTat — HybridAgent switches to NiceTFT against these),
+    # one hard-headed (Boulware — tests floor management and DealSeeker),
+    # one adaptive reference (Aspiration), one medium conceder (Linear),
+    # and one stochastic opponent (Random — tests acceptance quality and
+    # robustness; pure hold-high strategies like Boulware do poorly because
+    # Random rarely hits their high threshold).
+    #
+    # Removed: NiceNegotiator (accepts ANY offer → inflates agents that
+    # simply propose their max utility; does not test negotiation quality).
+    # Removed: TimeBasedConcedingNegotiator (redundant with Linear/Aspiration;
+    # over-represents the cooperative end of the spectrum).
     baselines = {
         "Aspiration":  AspirationNegotiator,
-        "TBConceder":  TimeBasedConcedingNegotiator,
+        "Linear":      LinearTBNegotiator,
         "MiCRO":       MiCRONegotiator,
         "TitForTat":   NaiveTitForTatNegotiator,
-        "NiceAgent":   NiceNegotiator,
+        "Random":      RandomNegotiator,
         "Boulware":    BoulwareTBNegotiator,
     }
 
@@ -1278,35 +1369,40 @@ def evaluate():
         #   (d) are robust (robustness, hard_u)
         #   (e) are cooperative (opp_sat)
         #
-        # Weight rationale (v3 — increased integrative + hard scenario coverage):
+        # Weight rationale (v4 — adversarial baseline overhaul + pareto-escape scenarios):
         #   10% effective utility   (avg_u * agree_rate — penalises stalemates)
-        #   12% agreement rate      (critical: no deal = no score)
-        #   14% Pareto optimality   (↑ from 10%: deal quality — how close to Pareto frontier;
-        #                            now better-sampled with 8 integrative domains)
-        #   13% Nash optimality     (mutual benefit, most discriminative)
-        #    8% Kalai optimality    (↑ from 7%: fair outcome quality)
-        #    6% max-welfare optimality (NEW: joint outcome vs best possible welfare)
-        #    6% opponent satisfaction (↑ from 4%: cooperative quality, fairness signal)
+        #    7% agreement rate      (↓ from 12%: pure "always agree" agents were over-
+        #                            rewarded; NiceAgent removal reduces this inflation)
+        #   14% Pareto optimality   (deal quality — how close to Pareto frontier;
+        #                            pareto_escape scenarios now explicitly test this)
+        #   17% Nash optimality     (↑ from 13%: joint outcome quality — most
+        #                            discriminative signal; adaptive agents that find
+        #                            integrative/escape-path outcomes score much higher)
+        #    8% Kalai optimality    (fair outcome quality)
+        #    7% max-welfare optimality (↑ from 6%: joint welfare vs best possible)
+        #    6% opponent satisfaction (cooperative quality, fairness signal)
         #    4% negotiation speed
         #    5% robustness
-        #   11% utility under agreement (deal quality conditional on agreeing)
-        #   11% difficulty-weighted utility (↓ from 15%: hard_u now covers 4 hard
-        #                                   domains instead of 1, so less noisy)
+        #    9% utility under agreement (↓ from 11%: conditional utility less
+        #                               informative when baselines are adversarial)
+        #   13% difficulty-weighted utility (↑ from 11%: harder baselines make
+        #                                   hard_u more discriminative — agents that
+        #                                   hold value against Boulware/Random score here)
         #   -- 10% per-domain rank (added below)
         # Weights sum to 1.00:
-        #   0.10+0.12+0.14+0.13+0.08+0.06+0.06+0.04+0.05+0.11+0.11 = 1.00
+        #   0.10+0.07+0.14+0.17+0.08+0.07+0.06+0.04+0.05+0.09+0.13 = 1.00
         composite_raw = (
             0.10 * effective_util
-            + 0.12 * agree_rate
+            + 0.07 * agree_rate
             + 0.14 * avg_popt
-            + 0.13 * avg_nopt
+            + 0.17 * avg_nopt
             + 0.08 * avg_kopt
-            + 0.06 * avg_mwopt
+            + 0.07 * avg_mwopt
             + 0.06 * opp_sat
             + 0.04 * speed
             + 0.05 * robustness
-            + 0.11 * util_under_agree
-            + 0.11 * hard_u
+            + 0.09 * util_under_agree
+            + 0.13 * hard_u
             # + 0.10 reserved for per_domain_rank (added below)
         )
 
@@ -1412,9 +1508,9 @@ def evaluate():
 
     print("\n" + "=" * 185)
     print("AGENT RANKING (sorted by composite score)")
-    print("  Composite = 0.10*EffUtil + 0.12*AgreeRate + 0.14*POpt + 0.13*NOpt + 0.08*KOpt")
-    print("             + 0.06*MWOpt + 0.06*OppSat + 0.04*Speed + 0.05*Robust")
-    print("             + 0.11*U|Agree + 0.11*HardU + 0.10*PerDomainRank")
+    print("  Composite = 0.10*EffUtil + 0.07*AgreeRate + 0.14*POpt + 0.17*NOpt + 0.08*KOpt")
+    print("             + 0.07*MWOpt + 0.06*OppSat + 0.04*Speed + 0.05*Robust")
+    print("             + 0.09*U|Agree + 0.13*HardU + 0.10*PerDomainRank")
     print("  EffUtil = AvgUtil * AgreeRate (penalises stalemate-prone hard-headed agents)")
     print("  NOTE: Optimality metrics averaged over ALL runs (disagree→0); per-domain rank normalises across domains")
     print("=" * 185)
