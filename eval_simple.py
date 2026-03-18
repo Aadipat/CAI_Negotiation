@@ -26,6 +26,7 @@ from negmas import (
     calc_outcome_distances,
     calc_outcome_optimality,
 )
+from negmas.sao.negotiators.hybrid import HybridNegotiator
 from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
 from negmas.preferences.value_fun import AffineFun, IdentityFun, TableFun
 
@@ -34,6 +35,14 @@ _root = Path(__file__).resolve().parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 from feiyang.hybrid_agent import HybridAgent
+from zihao.Group6_Negotiator import Group6_Negotiator
+from dylan.Group56_Negotiator import Group56_Negotiator
+from aadi.time_based_agent import (
+    TimeBasedAspirationConceder,
+    UniqueArgmaxTimeBasedConceder,
+    AdaptiveUniqueArgmaxConceder,
+    NaiveBayesianTimeBasedNegotiator,
+)
 
 # ── Config ───────────────────────────────────────────────────────────────────
 SEED = 42
@@ -59,7 +68,17 @@ BASELINE_AGENTS = {
     "Random":       RandomNegotiator,
 }
 
-ALL_AGENTS = {"HybridAgent": HybridAgent, **STRONG_AGENTS, **BASELINE_AGENTS}
+# Student agents
+STUDENT_AGENTS = {
+    "Group6":          Group6_Negotiator,
+    "Group56":         Group56_Negotiator,
+    "TBAspirationC":   TimeBasedAspirationConceder,
+    "UniqArgmaxTB":    UniqueArgmaxTimeBasedConceder,
+    "AdaptiveArgmax":  AdaptiveUniqueArgmaxConceder,
+    "NaiveBayes":      NaiveBayesianTimeBasedNegotiator,
+}
+
+ALL_AGENTS = {"HybridAgent": HybridAgent, "HybridNegotiator": HybridNegotiator, **STRONG_AGENTS, **BASELINE_AGENTS, **STUDENT_AGENTS}
 
 
 # ── Scenarios ────────────────────────────────────────────────────────────────
@@ -269,9 +288,10 @@ def main():
     print(f"{'Rank':<5} {'Agent':<{W}} {'Agree%':>7} {'AvgUtil':>8} {'POpt':>7} {'NOpt':>7} {'Score':>8}")
     print("-" * 90)
     for rank, (name, ar, au, po, no, score) in enumerate(rankings, 1):
-        marker = " <-- [OURS]" if name == "HybridAgent" else ""
+        marker = " <-- [OURS]" if name == "HybridAgent" else (" <-- [CLASSIC]" if name == "HybridNegotiator" else "")
         group = (" [strong]" if name in STRONG_AGENTS
-                 else " [base]" if name in BASELINE_AGENTS else "")
+                 else " [base]" if name in BASELINE_AGENTS
+                 else " [student]" if name in STUDENT_AGENTS else "")
         print(f"{rank:<5} {name:<{W}} {ar*100:>6.1f}% {au:>8.4f} {po:>7.4f} {no:>7.4f} {score:>8.4f}{marker}{group}")
     print("=" * 90)
 
