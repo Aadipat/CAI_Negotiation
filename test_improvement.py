@@ -70,7 +70,7 @@ from negmas import (
     LinearTBNegotiator,
 )
 from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
-from negmas.preferences.value_fun import AffineFun, IdentityFun, LinearFun, TableFun
+from negmas.preferences.value_fun import AffineFun, IdentityFun, TableFun
 from negmas.sao import SAONegotiator, SAOState, ResponseType
 from negmas import Outcome
 
@@ -360,64 +360,94 @@ class InstrumentedHybridAgent(SAONegotiator):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  SCENARIO GENERATION (mirrors evaluation.py)
+#  SCENARIO GENERATION (mirrors eval_simple.py)
 # ════════════════════════════════════════════════════════════════════════════
 
-def _divergent_weight_pair(issues, rng):
-    n = len(issues)
-    raw_a = [rng.uniform(0.1, 1.0) for _ in range(n)]
-    raw_b = list(reversed(raw_a))
-    raw_b = [max(0.05, w + rng.uniform(-0.2, 0.2)) for w in raw_b]
-    sum_a, sum_b = sum(raw_a), sum(raw_b)
-    wa = {iss.name: w / sum_a for iss, w in zip(issues, raw_a)}
-    wb = {iss.name: w / sum_b for iss, w in zip(issues, raw_b)}
-    return wa, wb
-
-
-def _make_opposed_ufuns(issues, os, rng, opposition_target=0.6):
-    vals_a, vals_b = {}, {}
-    wa, wb = _divergent_weight_pair(issues, rng)
-    for issue in issues:
-        slope_a = rng.uniform(0.5, 2.0) * rng.choice([-1, 1])
-        slope_b = (1 - opposition_target) * slope_a + opposition_target * (-slope_a)
-        slope_b += rng.uniform(-0.3, 0.3)
-        bias_a, bias_b = rng.uniform(0, 3), rng.uniform(0, 3)
-        raw_a = {v: slope_a * v + bias_a for v in range(issue.cardinality)}
-        raw_b = {v: slope_b * v + bias_b for v in range(issue.cardinality)}
-        for raw, vd in [(raw_a, vals_a), (raw_b, vals_b)]:
-            lo, hi = min(raw.values()), max(raw.values())
-            rng_v = hi - lo
-            normed = {k: (v - lo) / rng_v for k, v in raw.items()} if rng_v > 0 else {k: 0.5 for k in raw}
-            vd[issue.name] = TableFun(normed)
-    ua = LUFun(values=vals_a, weights=wa, outcome_space=os).scale_max(1.0)
-    ub = LUFun(values=vals_b, weights=wb, outcome_space=os).scale_max(1.0)
-    return ua, ub
-
-
-def _make_table_ufuns(issues, os, rng):
-    vals_a, vals_b = {}, {}
-    wa, wb = _divergent_weight_pair(issues, rng)
-    for issue in issues:
-        n = issue.cardinality
-        ta = {i: rng.random() for i in range(n)}
-        tb = {i: max(0.0, 1.0 - ta[i] + rng.uniform(-0.3, 0.3)) for i in range(n)}
-        vals_a[issue.name] = TableFun(ta)
-        vals_b[issue.name] = TableFun(tb)
-    ua = LUFun(values=vals_a, weights=wa, outcome_space=os).scale_max(1.0)
-    ub = LUFun(values=vals_b, weights=wb, outcome_space=os).scale_max(1.0)
-    return ua, ub
-
-
-def _buyer_seller_ufuns(issues, os):
+def _make_buyer_seller():
+    """Classic buyer/seller: opposing on price & delivery, aligned on quantity."""
+    issues = [
+        make_issue(name="price", values=10),
+        make_issue(name="quantity", values=(1, 11)),
+        make_issue(name="delivery_time", values=10),
+    ]
+    os = make_os(issues)
     buyer = LUFun(
-        values={"price": AffineFun(-1, bias=9.0), "quantity": LinearFun(0.2), "delivery_time": IdentityFun()},
+        values={"price": AffineFun(-1, bias=9.0), "quantity": IdentityFun(),
+                "delivery_time": IdentityFun()},
         outcome_space=os,
     ).scale_max(1.0)
     seller = LUFun(
-        values={"price": IdentityFun(), "quantity": LinearFun(0.2), "delivery_time": AffineFun(-1, bias=9.0)},
+        values={"price": IdentityFun(), "quantity": IdentityFun(),
+                "delivery_time": AffineFun(-1, bias=9.0)},
         outcome_space=os,
     ).scale_max(1.0)
-    return buyer, seller
+    return issues, os, buyer, seller
+
+
+def _make_integrative(rng: random.Random):
+    """Opposite issue priorities — HybridAgent's ParetoExpert shines here."""
+    issues = [make_issue(name=f"i{j}", values=rng.randint(4, 8)) for j in range(4)]
+    os = make_os(issues)
+    n = len(issues)
+    raw_a = [float(n - i) for i in range(n)]
+    raw_b = [float(i + 1) for i in range(n)]
+    sum_a, sum_b = sum(raw_a), sum(raw_b)
+    w_a = {iss.name: w / sum_a for iss, w in zip(issues, raw_a)}
+    w_b = {iss.name: w / sum_b for iss, w in zip(issues, raw_b)}
+    vals_a, vals_b = {}, {}
+    for issue in issues:
+        nv = issue.cardinality
+        ta = {i: i / max(nv - 1, 1) for i in range(nv)}
+        tb = {i: max(0.0, 1.0 - i / max(nv - 1, 1) + rng.uniform(-0.1, 0.1)) for i in range(nv)}
+        vals_a[issue.name] = TableFun(ta)
+        vals_b[issue.name] = TableFun(tb)
+    ua = LUFun(values=vals_a, weights=w_a, outcome_space=os).scale_max(1.0)
+    ub = LUFun(values=vals_b, weights=w_b, outcome_space=os).scale_max(1.0)
+    return issues, os, ua, ub
+
+
+def _make_medium_opp(rng: random.Random):
+    """3-issue medium-opposition scenario."""
+    issues = [make_issue(name=f"i{j}", values=rng.randint(4, 7)) for j in range(3)]
+    os = make_os(issues)
+    vals_a, vals_b = {}, {}
+    raw_wa = [rng.uniform(0.1, 1.0) for _ in issues]
+    raw_wb = list(reversed(raw_wa))
+    sum_a, sum_b = sum(raw_wa), sum(raw_wb)
+    w_a = {iss.name: w / sum_a for iss, w in zip(issues, raw_wa)}
+    w_b = {iss.name: w / sum_b for iss, w in zip(issues, raw_wb)}
+    for issue in issues:
+        nv = issue.cardinality
+        ta = {i: rng.random() for i in range(nv)}
+        tb = {i: max(0.0, min(1.0, 0.5 * ta[i] + 0.5 * (1 - ta[i]) + rng.uniform(-0.1, 0.1)))
+              for i in range(nv)}
+        vals_a[issue.name] = TableFun(ta)
+        vals_b[issue.name] = TableFun(tb)
+    ua = LUFun(values=vals_a, weights=w_a, outcome_space=os).scale_max(1.0)
+    ub = LUFun(values=vals_b, weights=w_b, outcome_space=os).scale_max(1.0)
+    return issues, os, ua, ub
+
+
+def _make_high_opp(rng: random.Random):
+    """High-opposition: both agents care about same issues with opposite values."""
+    issues = [make_issue(name=f"i{j}", values=rng.randint(4, 7)) for j in range(3)]
+    os = make_os(issues)
+    raw = [rng.uniform(0.7, 1.0) for _ in issues]
+    s = sum(raw)
+    w_shared = {iss.name: w / s for iss, w in zip(issues, raw)}
+    vals_a, vals_b = {}, {}
+    for issue in issues:
+        nv = issue.cardinality
+        ta = {i: i / max(nv - 1, 1) for i in range(nv)}
+        tb = {i: max(0.0, 1.0 - i / max(nv - 1, 1) + rng.uniform(-0.03, 0.03)) for i in range(nv)}
+        lo, hi = min(tb.values()), max(tb.values())
+        if hi > lo:
+            tb = {k: (v - lo) / (hi - lo) for k, v in tb.items()}
+        vals_a[issue.name] = TableFun(ta)
+        vals_b[issue.name] = TableFun(tb)
+    ua = LUFun(values=vals_a, weights=w_shared, outcome_space=os).scale_max(1.0)
+    ub = LUFun(values=vals_b, weights=w_shared, outcome_space=os).scale_max(1.0)
+    return issues, os, ua, ub
 
 
 @dataclass
@@ -434,37 +464,19 @@ class Scenario:
 def build_scenarios(rng: random.Random) -> list[Scenario]:
     scenarios = []
 
-    # Buyer/seller
-    bs_issues = [
-        make_issue(name="price", values=10),
-        make_issue(name="quantity", values=(1, 11)),
-        make_issue(name="delivery_time", values=10),
-    ]
-    bs_os = make_os(bs_issues)
-    buyer, seller = _buyer_seller_ufuns(bs_issues, bs_os)
-    outs = list(enumerate_issues(bs_issues))
-    opp = opposition_level([buyer, seller], outcomes=outs)
-    scenarios.append(Scenario("buyer_seller", bs_issues, bs_os, buyer, seller, opp, "buyer_seller"))
-
-    # Linear opposed — easy/medium/hard
-    for n_issues, opp_target, difficulty in [
-        (3, 0.3, "easy"), (3, 0.6, "medium"), (4, 0.8, "hard"),
+    for name, make_fn, task_type in [
+        ("buyer_seller",   lambda: _make_buyer_seller(),    "buyer_seller"),
+        ("integrative_4i", lambda: _make_integrative(rng),  "integrative"),
+        ("medium_opp_3i",  lambda: _make_medium_opp(rng),   "medium_opp"),
+        ("high_opp_3i",    lambda: _make_high_opp(rng),     "high_opp"),
     ]:
-        issues = [make_issue(name=f"i{i}", values=8) for i in range(n_issues)]
-        os_ = make_os(issues)
-        ua, ub = _make_opposed_ufuns(issues, os_, rng, opp_target)
+        issues, os_, ua, ub = make_fn()
         outs = list(enumerate_issues(issues))
-        opp = opposition_level([ua, ub], outcomes=outs)
-        scenarios.append(Scenario(f"linear_{difficulty}", issues, os_, ua, ub, opp, "linear"))
-
-    # Table ufuns — non-linear
-    for n_issues, label in [(3, "table_3"), (5, "table_5")]:
-        issues = [make_issue(name=f"i{i}", values=6) for i in range(n_issues)]
-        os_ = make_os(issues)
-        ua, ub = _make_table_ufuns(issues, os_, rng)
-        outs = list(enumerate_issues(issues))
-        opp = opposition_level([ua, ub], outcomes=outs)
-        scenarios.append(Scenario(label, issues, os_, ua, ub, opp, "table"))
+        try:
+            opp = opposition_level([ua, ub], outcomes=outs)
+        except Exception:
+            opp = 0.0
+        scenarios.append(Scenario(name, issues, os_, ua, ub, opp, task_type))
 
     return scenarios
 
@@ -474,16 +486,16 @@ def build_scenarios(rng: random.Random) -> list[Scenario]:
 # ════════════════════════════════════════════════════════════════════════════
 
 OPPONENT_CLASSES = [
-    ("Aspiration",   AspirationNegotiator),
-    ("Boulware",     BoulwareTBNegotiator),
-    ("Conceder",     ConcederTBNegotiator),
-    ("Linear",       LinearTBNegotiator),
-    ("MiCRO",        MiCRONegotiator),
-    ("TFT",          NaiveTitForTatNegotiator),
-    ("Random",       RandomNegotiator),
-    ("Tough",        ToughNegotiator),
-    ("Nice",         NiceNegotiator),
-    ("TimeConceder", TimeBasedConcedingNegotiator),
+    ("MiCRO",       MiCRONegotiator),
+    ("Aspiration",  AspirationNegotiator),
+    ("Boulware",    BoulwareTBNegotiator),
+    ("TitForTat",   NaiveTitForTatNegotiator),
+    ("Linear",      LinearTBNegotiator),
+    ("TBConceder",  TimeBasedConcedingNegotiator),
+    ("Conceder",    ConcederTBNegotiator),
+    ("Nice",        NiceNegotiator),
+    ("Tough",       ToughNegotiator),
+    ("Random",      RandomNegotiator),
 ]
 
 
