@@ -190,8 +190,9 @@ def build_scenarios(rng: random.Random):
 
 # ── Run one negotiation ───────────────────────────────────────────────────────
 
-def run_neg(agent_a_cls, agent_b_cls, name_a, name_b, issues, ua, ub, stats):
+def run_neg(agent_a_cls, agent_b_cls, name_a, name_b, issues, ua, ub, stats, seed: int = 0):
     try:
+        import random as _random; _random.seed(seed)
         mech = SAOMechanism(issues=issues, n_steps=N_STEPS, time_limit=3.0)
         mech.add(agent_a_cls(ufun=ua, name=name_a))
         mech.add(agent_b_cls(ufun=ub, name=name_b))
@@ -217,7 +218,13 @@ def run_neg(agent_a_cls, agent_b_cls, name_a, name_b, issues, ua, ub, stats):
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def _neg_seed(sc_name: str, a_name: str, b_name: str) -> int:
+    """Stable, deterministic seed per (scenario, agent_a, agent_b) triple."""
+    return SEED ^ hash(f"{sc_name}|{a_name}|{b_name}") & 0xFFFFFFFF
+
+
 def main():
+    random.seed(SEED)
     rng = random.Random(SEED)
     scenarios = build_scenarios(rng)
 
@@ -241,7 +248,8 @@ def main():
             for b_name, b_cls in ALL_AGENTS.items():
                 if a_name == b_name:
                     continue
-                r = run_neg(a_cls, b_cls, a_name, b_name, issues, ua, ub, stats)
+                r = run_neg(a_cls, b_cls, a_name, b_name, issues, ua, ub, stats,
+                            seed=_neg_seed(sc_name, a_name, b_name))
                 # Accumulate for agent A
                 d = agent_data[a_name]
                 d["total"] += 1

@@ -93,13 +93,34 @@ class ExpertBase:
         self, candidates: list[Outcome], ufun: UtilityFunction,
         opp_model: OpponentModel, alpha: float = 0.3,
     ) -> Outcome:
-        """Pick outcome that maximizes (1-alpha)*self + alpha*opp among candidates."""
+        """
+        Pick outcome that balances self-utility and opponent utility.
+
+        Blends linear combination with geometric mean (Nash product proxy).
+        Linear scoring maximises weighted sum; geometric mean maximises the
+        Nash bargaining product u_self * u_opp, which is exactly what
+        avg_nopt and avg_popt in the evaluation measure.
+
+        The blend only activates after ≥10 opponent offers, when the
+        frequency-based opponent model has enough data to be reliable.
+        Candidates are pre-filtered to a ±5% utility band, so switching
+        from a linearly-dominant to a Nash-dominant outcome costs at most
+        ~5% self utility while the Nash quality gain can be substantial.
+        """
         best_score = -1.0
         best = candidates[0]
+        # Use Nash blend when opponent model has enough data to be reliable
+        use_nash_blend = len(opp_model.offers) >= 10
         for outcome in candidates:
             u_self = self._get_utility(ufun, outcome)
             u_opp = opp_model.get_predicted_utility(outcome)
-            score = (1.0 - alpha) * u_self + alpha * u_opp
+            linear = (1.0 - alpha) * u_self + alpha * u_opp
+            if use_nash_blend:
+                # Geometric mean is in [0,1] and peaks at Nash-optimal outcomes
+                geo = (u_self * max(u_opp, 0.01)) ** 0.5
+                score = 0.5 * linear + 0.5 * geo
+            else:
+                score = linear
             if score > best_score:
                 best_score = score
                 best = outcome
@@ -175,8 +196,8 @@ class BoulwareExpert(ExpertBase):
         if opp_model is not None and len(opp_model.offers) > 3 and len(candidates) > 1:
             return self._pick_best_for_opponent(candidates, ufun, opp_model, alpha=0.25)
 
-        # Cycle through candidates
-        return candidates[randint(0, len(candidates) - 1)]
+        # Deterministic fallback: first candidate has highest utility in band
+        return candidates[0]
 
     def should_accept(self, offer, ufun, opp_model, t, state) -> bool:
         if offer is None:
@@ -210,7 +231,34 @@ class ParetoExpert(ExpertBase):
         max_util = state.get("max_util", 1.0)
         target = self._get_target_utility(t, self.e, min_util, max_util)
 
-        # Gather candidates at or above target
+        if opp_model is not None and len(opp_model.offers) > 5:
+            # True Nash-product search: scan ALL outcomes above the aspiration
+            # target and return the one maximising u_self * u_opp.
+            #
+            # Why this is better than the old 200-candidate band approach:
+            # • The old code capped at 200 outcomes sorted by OUR utility.
+            #   In integrative domains the Nash-optimal outcome can be anywhere
+            #   above target (e.g. self=0.72 opp=0.94 beats self=0.90 opp=0.20).
+            # • Nash product directly maximises what avg_nopt measures (35% weight).
+            # • Self-utility is protected: we never go below `target`, which is
+            #   bounded by min_util from below.
+            # • sorted_outcomes is already in descending self-utility order, so
+            #   we iterate once and stop when utility drops below target.
+            best: Outcome | None = None
+            best_nash = -1.0
+            for outcome in sorted_outcomes:
+                u_self = self._get_utility(ufun, outcome)
+                if u_self < target:
+                    break  # sorted descending — all remaining are below target
+                u_opp = opp_model.get_predicted_utility(outcome)
+                nash = u_self * max(u_opp, 0.01)
+                if nash > best_nash:
+                    best_nash = nash
+                    best = outcome
+            if best is not None:
+                return best
+
+        # Fallback (early game / no opponent model): pick from top candidates
         candidates = []
         for outcome in sorted_outcomes:
             u = self._get_utility(ufun, outcome)
@@ -219,7 +267,6 @@ class ParetoExpert(ExpertBase):
             candidates.append(outcome)
             if len(candidates) >= 200:
                 break
-
         if not candidates:
             candidates = [sorted_outcomes[0]]
 
@@ -323,7 +370,7 @@ class NiceTFTExpert(ExpertBase):
             return self._pick_best_for_opponent(candidates, ufun, opp_model, alpha=0.35)
 
         self.num_proposed += 1
-        return candidates[randint(0, len(candidates) - 1)]
+        return candidates[0]  # deterministic fallback
 
     def should_accept(self, offer, ufun, opp_model, t, state) -> bool:
         if offer is None:
@@ -434,7 +481,7 @@ class ForecastExpert(ExpertBase):
             alpha = min(0.4, 0.20 + 0.20 * t)
             return self._pick_best_for_opponent(candidates, ufun, opp_model, alpha=alpha)
 
-        return candidates[randint(0, len(candidates) - 1)]
+        return candidates[0]  # deterministic fallback
 
     def should_accept(self, offer, ufun, opp_model, t, state) -> bool:
         if offer is None:
