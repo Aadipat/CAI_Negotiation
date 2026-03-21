@@ -564,7 +564,6 @@ def run_negotiation(
         issues=ufun_a.outcome_space.issues,
         n_steps=n_steps,
         time_limit=None,
-        seed=seed,
     )
 
     try:
