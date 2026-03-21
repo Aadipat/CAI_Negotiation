@@ -60,10 +60,10 @@ class MetaController:
 
         self.n_experts = len(self.experts)
 
-        # Balanced initial weights (Boulware preferred to hold ground early)
+        # Balanced initial weights 
         self.weights = [1.0] * self.n_experts
-        self.weights[0] = 2.0   # Boulware — hold ground
-        self.weights[2] = 2.0   # NiceTFT for TFT/MiCRO detection
+        self.weights[0] = 1.5   # Boulware — 稍微保留前期强硬优势，从 2.0 降到 1.5（原值：2.0）
+        self.weights[2] = 1.0   # NiceTFT — 降回 1.0，与其他自适应专家平起平坐（原值：2.0)
 
         # Performance tracking
         self.expert_rewards: list[float] = [0.0] * self.n_experts
@@ -174,34 +174,20 @@ class MetaController:
 
             if features.get("is_tft_style", False) or features.get("is_micro_style", False):
                 # TFT/MiCRO opponents: boost NiceTFT significantly
-                scores[2] += 2.5   # NiceTFT is the right counter-strategy
-                scores[0] -= 1.0   # Boulware will stalemate
-                scores[3] += 0.5   # Forecast can also adapt
-
-            elif features["is_hardheaded"]:
-                # Hardheaded opponent: need to concede to find deals
-                scores[0] -= 0.5
-                scores[1] += 0.5   # Pareto explores space
-                scores[3] += 1.5   # Forecast adapts to stubborn
-                if t > 0.7:
-                    scores[4] += 1.0   # DealSeeker for late agreement
-
-            elif features["is_conceder"]:
-                # Conceder: hold ground, they'll come to us
-                scores[0] += 1.5
-                scores[2] -= 0.5
-                scores[1] -= 0.5
+                scores[2] += 1.0   # 修改：从 2.5 大幅砍到 1.0。让它有优势，但不至于无脑碾压
+                scores[0] -= 1.0   # 保持不变
+                scores[3] += 0.8   # 修改：把 Forecast 的加分从 0.5 稍微提高到 0.8，增加竞争性
 
             # Stalemate detection
             if features.get("is_stalemate", False):
-                scores[2] += 1.5   # NiceTFT to break stalemate
-                scores[4] += 1.5   # DealSeeker to find any deal
-                scores[0] -= 1.5   # Boulware makes stalemate worse
+                scores[2] += 0.8   # 修改：从 1.5 降到 0.8，NiceTFT 可以用来破局，但别给太多分
+                scores[4] += 1.2   # 修改：从 1.5 降到 1.2，DealSeeker 破局能力也很强，让它保持微弱优势
+                scores[0] -= 1.5   # 保持不变，强硬派确实不适合破局
 
             # Reciprocity: if opponent is reciprocal, reward NiceTFT
             reciprocity = features.get("reciprocity", 0.5)
             if reciprocity > 0.6:
-                scores[2] += 0.8
+                scores[2] += 0.4   # 修改：从 0.8 降到 0.4，作为锦上添花的微调即可
 
             cr = features.get("concession_rate", 0.0)
             if cr > 0.15:
