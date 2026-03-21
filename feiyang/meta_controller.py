@@ -145,16 +145,16 @@ class MetaController:
             # Early: hold ground with Boulware, some NiceTFT signaling
             phase_priors = [3.0, 0.5, 1.5, 0.8, 0.0]
         elif t < 0.30:
-            phase_priors = [2.5, 0.8, 1.5, 1.2, 0.0]
+            phase_priors = [2.4, 1.0, 1.4, 1.2, 0.0]
         elif t < 0.50:
-            # Mid-early: Boulware + Forecast
-            phase_priors = [2.0, 1.2, 1.5, 2.0, 0.0]
+            # Mid-early: add more Pareto exploration for trade opportunities
+            phase_priors = [1.8, 1.8, 1.4, 2.0, 0.0]
         elif t < 0.70:
             # Mid: Forecast + Pareto, some NiceTFT
-            phase_priors = [1.5, 1.5, 1.5, 2.5, 0.3]
+            phase_priors = [1.3, 2.1, 1.3, 2.4, 0.3]
         elif t < 0.85:
             # Mid-late: DealSeeker + Forecast
-            phase_priors = [0.8, 1.5, 1.2, 2.0, 2.0]
+            phase_priors = [0.8, 1.8, 1.1, 1.9, 2.0]
         else:
             # Late: DealSeeker dominates
             phase_priors = [0.3, 1.0, 0.8, 1.5, 3.5]
@@ -165,6 +165,12 @@ class MetaController:
         # === Opponent-style adjustments ===
         if opp_model is not None and len(opp_model.offers) >= 8:
             features = opp_model.get_style_features()
+            # When style is ambiguous, favor Pareto exploration.
+            if (not features.get("is_hardheaded", False)
+                    and not features.get("is_conceder", False)
+                    and not features.get("is_tft_style", False)
+                    and not features.get("is_micro_style", False)):
+                scores[1] += 0.6
 
             if features.get("is_tft_style", False) or features.get("is_micro_style", False):
                 # TFT/MiCRO opponents: boost NiceTFT significantly
