@@ -5,28 +5,6 @@ Tracks how often each issue-value pair appears in opponent bids,
 and estimates opponent utility using frequency counts, issue weight
 estimation via concentration metrics, and concession trend tracking.
 
-======================================================================
-PARAMETERS CHANGED FROM ORIGINAL VERSION (Zihao modifications):
-1. Stalemate Detection:
-   - Consecutive repeats needed for a stalemate increment increased from 3 to 5.
-   - Global stalemate threshold (`is_stalemate` property) changed from:
-     (repeats >= 3 OR count >= 2)  ->  (repeats >= 5 OR count >= 3).
-     *Effect: Makes the agent much more tolerant to opponent repetition 
-     before officially declaring a "stalemate".*
-
-2. Style Classification Triggers (_classify_style):
-   - Minimum offers required to start classifying reduced from 8 to 5.
-   - Hardheaded detection: minimum offers required reduced from 15 to 10.
-     *Effect: The agent forms an opinion about the opponent's style much earlier in the negotiation.*
-
-3. Style Classification Logic (TFT & MiCRO):
-   - Sliding window size for TFT detection: now explicitly uses `min(4, n // 2)`.
-   - Gradual ratio calculation introduced to evaluate TFT style.
-   - TFT logic heavily redefined to require: unique ratio > 0.5 AND gradual_ratio > 0.4 AND concession rate bounded (0.01 to 0.35).
-   - MiCRO detection: unique ratio threshold explicitly set to > 0.65 (with n > 8).
-     *Effect: TFT and MiCRO detections are now much more robust and mathematically grounded based on offer uniqueness and gradual utility changes.*
-======================================================================
-
 Enhanced features:
 - Reciprocity detection (TFT-style opponent awareness)
 - Stalemate detection (repeated same offers)
@@ -175,30 +153,14 @@ class OpponentModel:
         is_new = offer not in self.unique_offers
         self.unique_offers.add(offer)
 
-        # # Stalemate detection — detect faster
-        # if self._last_offer is not None and offer == self._last_offer:
-        #     self._consecutive_repeats += 1
-        #     if self._consecutive_repeats >= 3:  # need clear repetition signal
-        #         self._stalemate_count += 1
-        # else:
-        #     self._consecutive_repeats = 0
-        # self._last_offer = offer
-        
-        
+        # Stalemate detection — detect faster
         if self._last_offer is not None and offer == self._last_offer:
             self._consecutive_repeats += 1
-        if self._consecutive_repeats >= 5:  
-            self._stalemate_count += 1
+            if self._consecutive_repeats >= 3:  # need clear repetition signal
+                self._stalemate_count += 1
         else:
-            self._consecutive_repeats = 0  
-
-
-        @property
-        def is_stalemate(self) -> bool:
-            
-         return self._consecutive_repeats >= 5 or self._stalemate_count >= 3
-        
-    
+            self._consecutive_repeats = 0
+        self._last_offer = offer
 
         # Time segment tracking
         if normalized_time > 0.2:
