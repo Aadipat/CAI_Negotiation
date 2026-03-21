@@ -126,6 +126,32 @@ class ExpertBase:
                 best = outcome
         return best
 
+    def _pick_balanced_nash(
+        self,
+        candidates: list[Outcome],
+        ufun: UtilityFunction,
+        opp_model: OpponentModel,
+        beta: float = 0.5,
+    ) -> Outcome:
+        """
+        Pick an outcome using a Nash/welfare blend.
+
+        beta controls how much we value Nash product vs social welfare.
+        """
+        beta = max(0.0, min(1.0, beta))
+        best_score = -1.0
+        best = candidates[0]
+        for outcome in candidates:
+            u_self = self._get_utility(ufun, outcome)
+            u_opp = opp_model.get_predicted_utility(outcome)
+            nash = u_self * u_opp
+            welfare = 0.5 * (u_self + u_opp)
+            score = beta * nash + (1.0 - beta) * welfare
+            if score > best_score:
+                best_score = score
+                best = outcome
+        return best
+
 
 class BoulwareExpert(ExpertBase):
     """
@@ -243,7 +269,14 @@ class ParetoExpert(ExpertBase):
                 break
         if not candidates:
             candidates = [sorted_outcomes[0]]
-        return candidates[0]  # deterministic: highest utility above target
+
+        # Score by combined self + opponent utility
+        if opp_model is not None and len(opp_model.offers) > 3:
+            # Shift from welfare to Nash emphasis as deadline approaches.
+            beta = 0.30 + 0.45 * t
+            return self._pick_balanced_nash(candidates, ufun, opp_model, beta=beta)
+        else:
+            return candidates[randint(0, len(candidates) - 1)]
 
     def should_accept(self, offer, ufun, opp_model, t, state) -> bool:
         if offer is None:
@@ -534,7 +567,8 @@ class DealSeekerExpert(ExpertBase):
 
         # Pick the most opponent-friendly candidate
         if opp_model is not None and len(opp_model.offers) > 3:
-            return self._pick_best_for_opponent(candidates, ufun, opp_model, alpha=0.45)
+            beta = 0.45 + 0.35 * t
+            return self._pick_balanced_nash(candidates, ufun, opp_model, beta=beta)
 
         return candidates[randint(0, len(candidates) - 1)]
 
