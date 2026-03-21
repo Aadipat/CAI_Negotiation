@@ -556,12 +556,14 @@ def run_negotiation(
     seed: int = 0,
 ) -> NegotiationResult:
     """Run one negotiation; our agent is party A."""
+    random.seed(seed)
     our_agent = InstrumentedHybridAgent(cfg=cfg)
 
     mech = SAOMechanism(
         issues=ufun_a.outcome_space.issues,
         n_steps=n_steps,
         time_limit=None,
+        seed=seed,
     )
 
     try:
@@ -604,6 +606,11 @@ def run_negotiation(
     )
 
 
+def _trial_seed(cfg_name: str, scenario_name: str, opp_name: str, rep: int) -> int:
+    """Deterministic seed per (config, scenario, opponent, rep) — stable across runs."""
+    return SEED_BASE ^ hash(f"{cfg_name}|{scenario_name}|{opp_name}|{rep}") & 0xFFFFFFFF
+
+
 def run_all(
     configs: list[AgentConfig],
     scenarios: list[Scenario],
@@ -611,7 +618,6 @@ def run_all(
     reps_per_pair: int = 3,
 ) -> dict[str, ConfigSummary]:
     """Run all config × scenario × opponent combinations and collect results."""
-    rng = random.Random(SEED_BASE)
     summaries: dict[str, ConfigSummary] = {}
 
     total = len(configs) * len(scenarios) * len(opponents) * reps_per_pair
@@ -626,7 +632,7 @@ def run_all(
         for scenario in scenarios:
             for opp_name, opp_cls in opponents:
                 for rep in range(reps_per_pair):
-                    seed = rng.randint(0, 999999)
+                    seed = _trial_seed(cfg.name, scenario.name, opp_name, rep)
                     try:
                         result = run_negotiation(
                             cfg=cfg,

@@ -107,6 +107,18 @@ class AcceptanceController:
             if u >= u_counter and u >= threshold * 0.93:
                 return True
 
+            # === AC_nash: accept if opponent's offer has better Nash product
+            # than our planned counter-offer (integrative quality signal).
+            # Only when opponent model has ≥10 offers (reliable estimates).
+            if opp_model is not None and len(opp_model.offers) >= 10:
+                u_opp_offer = opp_model.get_predicted_utility(offer)
+                u_opp_counter = opp_model.get_predicted_utility(planned_counter)
+                nash_offer = u * max(u_opp_offer, 0.01)
+                nash_counter = u_counter * max(u_opp_counter, 0.01)
+                # Require a clear Nash improvement (≥10%) and minimum utility floor
+                if nash_offer > nash_counter * 1.10 and u >= threshold * 0.87:
+                    return True
+
         # === AC_expert: let expert weigh in ===
         if expert.should_accept(offer, ufun, opp_model, t, state):
             if u >= threshold * 0.90:

@@ -106,7 +106,7 @@ class HybridAgent(SAONegotiator):
         self._acceptance = AcceptanceController(
             reservation=self._reservation,
             min_util=self._min_util,
-            initial_threshold=0.92,         # tighter opening to hold ground
+            initial_threshold=0.88,         # wider opening to catch good early deals
             final_threshold=max(0.50, self._min_util),  # don't go below 50%
             no_accept_rounds=2,             # build opponent model before accepting
             emergency_time=0.88,            # later emergency — don't panic early
