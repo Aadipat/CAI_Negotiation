@@ -21,7 +21,7 @@ Pure NegMAS implementation — outcomes are tuples, ufun is callable.
 
 from __future__ import annotations
 
-from random import randint
+
 from typing import Any, Callable
 
 from negmas import Outcome
@@ -275,8 +275,7 @@ class ParetoExpert(ExpertBase):
             # Shift from welfare to Nash emphasis as deadline approaches.
             beta = 0.30 + 0.45 * t
             return self._pick_balanced_nash(candidates, ufun, opp_model, beta=beta)
-        else:
-            return candidates[randint(0, len(candidates) - 1)]
+        return candidates[0]  # deterministic fallback
 
     def should_accept(self, offer, ufun, opp_model, t, state) -> bool:
         if offer is None:
@@ -570,7 +569,7 @@ class DealSeekerExpert(ExpertBase):
             beta = 0.45 + 0.35 * t
             return self._pick_balanced_nash(candidates, ufun, opp_model, beta=beta)
 
-        return candidates[randint(0, len(candidates) - 1)]
+        return candidates[0]  # deterministic fallback
 
     def should_accept(self, offer, ufun, opp_model, t, state) -> bool:
         """DealSeeker is ready to accept any offer above min_util."""
