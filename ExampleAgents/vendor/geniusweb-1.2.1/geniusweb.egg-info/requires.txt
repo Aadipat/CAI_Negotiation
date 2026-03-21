@@ -1,5 +1,0 @@
-pyson
-tudelft-utilities
-tudelft-utilities-logging
-uri
-websocket-client>=1.0.1
