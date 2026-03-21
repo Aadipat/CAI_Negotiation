@@ -1,6 +1,7 @@
 """Simple evaluation: HybridAgent vs competitive NegMAS agents across 4 scenarios."""
 
 from __future__ import annotations
+import hashlib
 import math
 import random
 import sys
@@ -219,8 +220,11 @@ def run_neg(agent_a_cls, agent_b_cls, name_a, name_b, issues, ua, ub, stats, see
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def _neg_seed(sc_name: str, a_name: str, b_name: str) -> int:
-    """Stable, deterministic seed per (scenario, agent_a, agent_b) triple."""
-    return SEED ^ hash(f"{sc_name}|{a_name}|{b_name}") & 0xFFFFFFFF
+    """Stable, deterministic seed per (scenario, agent_a, agent_b) triple.
+    Uses hashlib (not built-in hash) so the value is identical across processes
+    regardless of PYTHONHASHSEED."""
+    key = f"{SEED}|{sc_name}|{a_name}|{b_name}".encode()
+    return int(hashlib.md5(key).hexdigest()[:8], 16)
 
 
 def main():

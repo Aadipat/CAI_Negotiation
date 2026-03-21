@@ -25,6 +25,7 @@ What you can tweak (see CONFIGURATIONS at the bottom):
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
 import random
 import sys
@@ -607,8 +608,11 @@ def run_negotiation(
 
 
 def _trial_seed(cfg_name: str, scenario_name: str, opp_name: str, rep: int) -> int:
-    """Deterministic seed per (config, scenario, opponent, rep) — stable across runs."""
-    return SEED_BASE ^ hash(f"{cfg_name}|{scenario_name}|{opp_name}|{rep}") & 0xFFFFFFFF
+    """Deterministic seed per (config, scenario, opponent, rep) — stable across runs.
+    Uses hashlib (not built-in hash) so the value is identical across processes
+    regardless of PYTHONHASHSEED."""
+    key = f"{SEED_BASE}|{scenario_name}|{opp_name}|{rep}".encode()
+    return int(hashlib.md5(key).hexdigest()[:8], 16)
 
 
 def run_all(
